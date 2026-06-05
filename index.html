@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MeetSync — Gestion des Réunions</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
+    <!-- Valeurs par défaut du thème ; remplacées dynamiquement par applyTheme() -->
+    <style id="ms-theme">
+      :root {
+        --ms-accent:               #7c3aed;
+        --ms-accent-dark:          #6d28d9;
+        --ms-accent-pale:          #f5f3ff;
+        --ms-accent-border:        #ddd6fe;
+        --ms-accent-dim:           rgba(124,58,237,0.15);
+        --ms-accent-glow:          rgba(124,58,237,0.35);
+        --ms-accent-light:         #a78bfa;
+        --ms-sidebar:              #1e1b4b;
+        --ms-sidebar-gradient-mid: #3730a3;
+        --ms-sidebar-gradient-end: #6d28d9;
+        --ms-radius:               14px;
+        --ms-radius-sm:            8px;
+        --ms-radius-lg:            20px;
+        --ms-shadow:               0 1px 3px rgba(0,0,0,0.07);
+        --ms-shadow-md:            0 4px 12px rgba(0,0,0,0.1);
+        --ms-shadow-top:           none;
+        --ms-border-width:         1px;
+        --ms-topbar:               56px;
+        --ms-pad:                  24px;
+        --ms-gap:                  20px;
+        --ms-nav-pad:              9px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
