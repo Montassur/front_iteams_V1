@@ -150,7 +150,7 @@ export function ActiveMeeting({ user, meetingId, orgId, setPage }: Props) {
   const {
     localStream, remoteParticipants, isAudioOn, isVideoOn, isScreenSharing,
     isConnected, mediaError, toggleAudio, toggleVideo, startScreenShare, stopScreenShare,
-  } = useMeetingRoom({ meetingId, userEmail: user.email, userName: user.name });
+  } = useMeetingRoom({ meetingId, userEmail: user.email, userName: user.name, canShareScreen });
 
   // ── Recording ────────────────────────────────────────────────────────────────
   const { state: recState, uploadProgress, setUploadProgress, errorMsg: recError, start: startRecRaw, stop: stopRecRaw } = useRecording({
@@ -566,16 +566,23 @@ export function ActiveMeeting({ user, meetingId, orgId, setPage }: Props) {
               danger={!isVideoOn}
               onClick={toggleVideo}
             />
-            {/* Screen share — only Modérateur and Présentateur */}
-            {canShareScreen && (
-              <ControlBtn
-                icon={isScreenSharing ? 'MonitorOff' : 'Monitor'}
-                label={isScreenSharing ? 'Arrêter partage' : 'Partager écran'}
-                active={!isScreenSharing}
-                highlight={isScreenSharing}
-                onClick={isScreenSharing ? stopScreenShare : startScreenShare}
-              />
-            )}
+            {/* Screen share — visible to everyone, but disabled for plain participants
+                so they can see the capability exists and who's allowed to use it. */}
+            <ControlBtn
+              icon={isScreenSharing ? 'MonitorOff' : 'Monitor'}
+              label={
+                canShareScreen
+                  ? (isScreenSharing ? 'Arrêter partage' : 'Partager écran')
+                  : 'Partager (réservé)'
+              }
+              active={canShareScreen && !isScreenSharing}
+              highlight={isScreenSharing}
+              disabled={!canShareScreen}
+              title={canShareScreen ? undefined : 'Seul le modérateur ou un présentateur peut partager l\'écran. Demandez au modérateur de vous promouvoir.'}
+              onClick={canShareScreen
+                ? (isScreenSharing ? stopScreenShare : startScreenShare)
+                : () => {}}
+            />
             {/* Agenda quick toggle */}
             <ControlBtn
               icon="List"
@@ -901,23 +908,31 @@ function VideoTile({ stream, name, isSelf, audioOn, videoOn, isScreenSharing }: 
 
 // ── Control Button ────────────────────────────────────────────────────────────
 
-function ControlBtn({ icon, label, active: _active, danger, highlight, onClick }: {
+function ControlBtn({ icon, label, active: _active, danger, highlight, disabled, title, onClick }: {
   icon: string; label: string; active: boolean;
-  danger?: boolean; highlight?: boolean; onClick: () => void;
+  danger?: boolean; highlight?: boolean;
+  disabled?: boolean; title?: string;
+  onClick: () => void;
 }) {
-  const bg = danger ? '#3d1a1a' : highlight ? '#0d3a26' : '#21262d';
-  const border = danger ? '#6e1a1a' : highlight ? '#1a5c38' : '#30363d';
-  const iconColor = danger ? '#f85149' : highlight ? '#3fb950' : '#e6edf3';
+  const bg = disabled ? '#161b22' : danger ? '#3d1a1a' : highlight ? '#0d3a26' : '#21262d';
+  const border = disabled ? '#21262d' : danger ? '#6e1a1a' : highlight ? '#1a5c38' : '#30363d';
+  const iconColor = disabled ? '#484f58' : danger ? '#f85149' : highlight ? '#3fb950' : '#e6edf3';
 
   return (
-    <button onClick={onClick} style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
-      background: bg, border: `1px solid ${border}`, borderRadius: 10,
-      padding: '8px 12px', cursor: 'pointer', color: iconColor,
-      fontSize: 11, fontFamily: 'inherit', transition: 'all 0.12s', minWidth: 56,
-    }}>
+    <button
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
+        background: bg, border: `1px solid ${border}`, borderRadius: 10,
+        padding: '8px 12px', cursor: disabled ? 'not-allowed' : 'pointer', color: iconColor,
+        fontSize: 11, fontFamily: 'inherit', transition: 'all 0.12s', minWidth: 56,
+        opacity: disabled ? 0.55 : 1,
+      }}
+    >
       <SIcon name={icon} size={18} color={iconColor} />
-      <span style={{ color: '#8b949e', whiteSpace: 'nowrap' }}>{label}</span>
+      <span style={{ color: disabled ? '#484f58' : '#8b949e', whiteSpace: 'nowrap' }}>{label}</span>
     </button>
   );
 }

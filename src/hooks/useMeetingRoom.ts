@@ -15,18 +15,41 @@ interface Options {
   meetingId: number;
   userEmail: string;
   userName: string;
+  /** When false, startScreenShare is a no-op. Defaults to true for backwards compat. */
+  canShareScreen?: boolean;
 }
 
-const ICE_SERVERS = [
+// ICE config. STUN alone is not enough — peers behind symmetric NAT (mobile
+// data, many corporate firewalls) need a TURN relay to negotiate media.
+// Set VITE_TURN_URL / VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL in .env to
+// point at your own coturn (recommended for production).
+const TURN_URL = import.meta.env.VITE_TURN_URL as string | undefined;
+const TURN_USER = import.meta.env.VITE_TURN_USERNAME as string | undefined;
+const TURN_CRED = import.meta.env.VITE_TURN_CREDENTIAL as string | undefined;
+
+const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  // Fallback TURN (Open Relay Project, free, public, rate-limited — fine for
+  // testing; swap with your own server in production via the env vars above).
+  ...(TURN_URL
+    ? [{ urls: TURN_URL, username: TURN_USER ?? '', credential: TURN_CRED ?? '' }]
+    : [
+        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+      ]),
 ];
 
 function sanitizeEmail(email: string) {
   return email.replace('@', '_at_').replace(/\./g, '_dot_');
 }
 
-export function useMeetingRoom({ meetingId, userEmail, userName }: Options) {
+export function useMeetingRoom({ meetingId, userEmail, userName, canShareScreen = true }: Options) {
+  // Live ref so the latest permission is honored even if it flips mid-call
+  // (e.g. moderator promotes someone, or demotes them, while the hook is mounted).
+  const canShareScreenRef = useRef(canShareScreen);
+  useEffect(() => { canShareScreenRef.current = canShareScreen; }, [canShareScreen]);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteParticipants, setRemoteParticipants] = useState<RemoteParticipant[]>([]);
   const [isAudioOn, setIsAudioOn] = useState(true);
@@ -103,13 +126,40 @@ export function useMeetingRoom({ meetingId, userEmail, userName }: Options) {
           });
         };
 
-        // Clean up on permanent failure
-        pc.onconnectionstatechange = () => {
-          if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        // Connection state handling.
+        // - Do NOT remove the participant on `failed` (they may still be in
+        //   the room — that's handled by the explicit "leave" room event and
+        //   the backend SessionDisconnect tracker). Instead, try an ICE
+        //   restart so we recover from transient network blips.
+        // - Only `closed` (we explicitly closed the pc) triggers cleanup.
+        pc.onconnectionstatechange = async () => {
+          if (pc.connectionState === 'closed') {
             if (peerConnsRef.current.get(email) === pc) {
               peerConnsRef.current.delete(email);
-              remoteParticipantsRef.current.delete(email);
-              syncRemotes();
+            }
+            return;
+          }
+          if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+            // Only the "polite"-rules offerer side should kick off the restart
+            // to avoid both sides racing. Same lexicographic rule we use for
+            // perfect negotiation.
+            const shouldRestart = userEmail > email;
+            if (!shouldRestart) return;
+            try {
+              const offer = await pc.createOffer({ iceRestart: true });
+              await pc.setLocalDescription(offer);
+              stompRef.current?.publish({
+                destination: '/app/meeting.room.signal',
+                body: JSON.stringify({
+                  type: 'offer',
+                  meetingId,
+                  toEmail: email,
+                  fromName: userName,
+                  sdp: offer.sdp,
+                }),
+              });
+            } catch (e) {
+              console.warn('[WebRTC] ICE restart failed for', email, e);
             }
           }
         };
@@ -265,6 +315,13 @@ export function useMeetingRoom({ meetingId, userEmail, userName }: Options) {
   }, []);
 
   const startScreenShare = useCallback(async () => {
+    // Defense-in-depth: refuse to start a share if the caller isn't allowed.
+    // The UI button is also gated, but this protects against bypasses
+    // (someone calling startScreenShare() from DevTools, a stale closure, etc.)
+    if (!canShareScreenRef.current) {
+      console.warn('[WebRTC] screen share refused — current role is not authorized');
+      return;
+    }
     try {
       const screenStream = await (navigator.mediaDevices as any).getDisplayMedia({ video: true });
       screenStreamRef.current = screenStream;
