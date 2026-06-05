@@ -17,6 +17,7 @@ import { InvoicesPage } from './pages/Invoices';
 import { ProfilePage } from './pages/Profile';
 import { AdminBillingPage } from './pages/AdminBilling';
 import { SIcon } from './components/icons/SIcon';
+import { PwaInstallPrompt } from './components/PwaInstallPrompt';
 import { applyTheme } from './theme/applyTheme';
 import type { PageId } from './types';
 import type { AuthSession } from './types/auth';
@@ -177,6 +178,7 @@ export default function App() {
         {renderPage()}
       </div>
       <AppTweaks />
+      <PwaInstallPrompt />
     </div>
   );
 }

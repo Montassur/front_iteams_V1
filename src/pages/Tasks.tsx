@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { SIcon } from '../components/icons/SIcon'
 import { getMyTasks, getOrgTasks, createTask, updateTask, deleteTask } from '../api/tasks'
+import { createMeeting } from '../api/meetings'
+import { todayInputValue, tomorrowInputValue, nextQuarterHourValue, localTimeInputValue } from '../utils/dateInput'
 import type { MeetingTaskDto, TaskStatus } from '../types/meeting'
 import type { User } from '../types'
 import * as chatApi from '../api/chat'
@@ -90,7 +92,7 @@ function TaskModal({ orgId, initialStatus, members, editing, onClose, onSave }: 
             </div>
             <div>
               <label style={{ display: 'block', color: '#374151', fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Date d'échéance</label>
-              <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)}
+              <input type="date" value={dueDate} min={todayInputValue()} onChange={e => setDueDate(e.target.value)}
                 style={{ width: '100%', padding: '9px 10px', borderRadius: 'var(--ms-radius-sm)', border: '1px solid #e2e8f0', fontSize: 13, color: '#334155', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
             </div>
           </div>
@@ -173,10 +175,11 @@ function KanbanCard({ task: t, onStatusChange, onSelect, onDelete }: {
 
 // ── Task detail ───────────────────────────────────────────────────────────────
 
-function TaskDetail({ task: t, onClose, onEdit, onStatusChange }: {
+function TaskDetail({ task: t, onClose, onEdit, onStatusChange, onScheduleMeeting }: {
   task: MeetingTaskDto; onClose: () => void
   onEdit: () => void
   onStatusChange: (t: MeetingTaskDto, s: TaskStatus) => void
+  onScheduleMeeting: () => void
 }) {
   const overdue = t.dueDate && t.status !== 'DONE' && new Date(t.dueDate) < new Date()
   const col = STATUS_COLS.find(s => s.key === t.status)!
@@ -208,12 +211,158 @@ function TaskDetail({ task: t, onClose, onEdit, onStatusChange }: {
         ))}
       </div>
       <div style={{ padding: '12px 18px', borderTop: '1px solid #f1f5f9', display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
+        {t.organizationId && t.status !== 'DONE' && (
+          <button onClick={onScheduleMeeting}
+            style={{ padding: '9px', borderRadius: 'var(--ms-radius-sm)', border: 'none', background: 'var(--ms-accent)', color: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, boxShadow: '0 2px 6px var(--ms-accent-glow)' }}>
+            <SIcon name="CalendarPlus" size={13} color="#fff" /> Planifier une réunion
+          </button>
+        )}
         {STATUS_COLS.filter(s => s.key !== t.status).map(s => (
           <button key={s.key} onClick={() => onStatusChange(t, s.key)}
             style={{ padding: '8px', borderRadius: 'var(--ms-radius-sm)', border: `1px solid ${s.bg}`, background: s.bg, color: s.color, fontWeight: 600, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>
             → {s.label}
           </button>
         ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Meeting-from-task modal ───────────────────────────────────────────────────
+
+function MeetingFromTaskModal({ task, onClose, onCreated }: {
+  task: MeetingTaskDto
+  onClose: () => void
+  onCreated: (meetingId: number) => void
+}) {
+  const today = todayInputValue()
+  // Use the task's due date if it's still in the future, otherwise pick tomorrow.
+  const defaultDate = task.dueDate && task.dueDate >= today
+    ? task.dueDate
+    : tomorrowInputValue()
+
+  const [subject, setSubject] = useState(`Réunion : ${task.description}`)
+  const [date, setDate] = useState(defaultDate)
+  const [time, setTime] = useState(defaultDate === today ? nextQuarterHourValue() : '09:00')
+  const [duration, setDuration] = useState(30)
+
+  const isTodaySelected = date === today
+  const minTime = isTodaySelected ? localTimeInputValue() : undefined
+
+  useEffect(() => {
+    if (!isTodaySelected) return
+    const nowHM = localTimeInputValue()
+    if (time < nowHM) setTime(nextQuarterHourValue())
+  }, [isTodaySelected, date, time])
+  const [includeAssignee, setIncludeAssignee] = useState(Boolean(task.assigneeId))
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const orgId = task.organizationId
+
+  const submit = async () => {
+    if (!orgId) { setError('Aucune organisation associée à cette tâche.'); return }
+    if (!subject.trim()) { setError('Sujet requis.'); return }
+    if (!date || !time) { setError('Date et heure requises.'); return }
+
+    // Build a local ISO without timezone shift — backend treats it as LocalDateTime
+    const scheduled = `${date}T${time}:00`
+    const scheduledMs = new Date(scheduled).getTime()
+    if (!Number.isFinite(scheduledMs) || scheduledMs <= Date.now()) {
+      setError('La date/heure doit être dans le futur.')
+      return
+    }
+
+    setSaving(true); setError('')
+    try {
+      const created = await createMeeting(orgId, {
+        subject: subject.trim(),
+        description: `Créée depuis la tâche : ${task.description}`,
+        scheduledDateTime: scheduled,
+        plannedDurationMinutes: duration,
+        participants: includeAssignee && task.assigneeId
+          ? [{ userId: task.assigneeId, role: 'PARTICIPANT' }]
+          : undefined,
+      })
+      onCreated(created.id)
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Échec de la création')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', zIndex: 250, display: 'flex', alignItems: 'center', justifyContent: 'center', backdropFilter: 'blur(4px)', fontFamily: 'Inter, sans-serif' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={{ background: '#fff', borderRadius: 'var(--ms-radius-lg)', width: 460, boxShadow: '0 32px 80px rgba(15,23,42,0.22)' }}>
+        <div style={{ padding: '18px 22px 14px', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ width: 32, height: 32, borderRadius: 9, background: 'var(--ms-accent-pale)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <SIcon name="CalendarPlus" size={15} color="var(--ms-accent)" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <h2 style={{ margin: 0, fontSize: 15, fontWeight: 800, color: '#0f172a' }}>Planifier une réunion</h2>
+            <p style={{ margin: '2px 0 0', fontSize: 12, color: '#64748b' }}>À partir de la tâche sélectionnée</p>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}>
+            <SIcon name="X" size={17} color="#94a3b8" />
+          </button>
+        </div>
+
+        <div style={{ padding: '18px 22px 22px', display: 'grid', gap: 14 }}>
+          <div>
+            <label style={{ display: 'block', color: '#374151', fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Sujet</label>
+            <input value={subject} onChange={e => setSubject(e.target.value)}
+              style={{ width: '100%', padding: '9px 12px', borderRadius: 'var(--ms-radius-sm)', border: '1px solid #e2e8f0', fontSize: 13, color: '#0f172a', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 1fr', gap: 10 }}>
+            <div>
+              <label style={{ display: 'block', color: '#374151', fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Date</label>
+              <input type="date" value={date} min={today} onChange={e => setDate(e.target.value)}
+                style={{ width: '100%', padding: '9px 10px', borderRadius: 'var(--ms-radius-sm)', border: '1px solid #e2e8f0', fontSize: 13, color: '#334155', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+            <div>
+              <label style={{ display: 'block', color: '#374151', fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Heure</label>
+              <input type="time" value={time} min={minTime} onChange={e => setTime(e.target.value)}
+                style={{ width: '100%', padding: '9px 10px', borderRadius: 'var(--ms-radius-sm)', border: '1px solid #e2e8f0', fontSize: 13, color: '#334155', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+            <div>
+              <label style={{ display: 'block', color: '#374151', fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Durée (min)</label>
+              <input type="number" min={5} step={5} value={duration} onChange={e => setDuration(Math.max(5, Number(e.target.value) || 30))}
+                style={{ width: '100%', padding: '9px 10px', borderRadius: 'var(--ms-radius-sm)', border: '1px solid #e2e8f0', fontSize: 13, color: '#334155', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
+            </div>
+          </div>
+
+          {task.assigneeId && task.assigneeName && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderRadius: 10, background: '#f8fafc', border: '1px solid #e8edf2', cursor: 'pointer' }}>
+              <input type="checkbox" checked={includeAssignee} onChange={e => setIncludeAssignee(e.target.checked)} />
+              <span style={{ fontSize: 13, color: '#334155' }}>Inviter <strong style={{ color: '#0f172a' }}>{task.assigneeName}</strong> (responsable de la tâche)</span>
+            </label>
+          )}
+
+          {error && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 10 }}>
+              <SIcon name="AlertCircle" size={14} color="#ef4444" />
+              <span style={{ color: '#b91c1c', fontSize: 13 }}>{error}</span>
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+            <button onClick={onClose} style={{ flex: 1, padding: '11px', borderRadius: 'var(--ms-radius-sm)', border: '1px solid #e2e8f0', background: '#fff', color: '#64748b', fontWeight: 600, fontSize: 14, cursor: 'pointer', fontFamily: 'inherit' }}>
+              Annuler
+            </button>
+            <button onClick={submit} disabled={saving} style={{
+              flex: 2, padding: '11px', borderRadius: 'var(--ms-radius-sm)', border: 'none',
+              background: saving ? '#c7d2fe' : 'var(--ms-accent)', color: '#fff',
+              fontWeight: 700, fontSize: 14, cursor: saving ? 'default' : 'pointer', fontFamily: 'inherit',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}>
+              {saving ? 'Création…' : (<><SIcon name="CalendarPlus" size={14} color="#fff" /> Créer la réunion</>)}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )
@@ -235,6 +384,8 @@ export function TasksPage({ user, selectedOrgId }: TasksPageProps) {
   const [editing, setEditing] = useState<MeetingTaskDto | undefined>()
   const [showModal, setShowModal] = useState(false)
   const [addInitialStatus, setAddInitialStatus] = useState<TaskStatus>('TO_DO')
+  const [meetingFromTask, setMeetingFromTask] = useState<MeetingTaskDto | null>(null)
+  const [meetingCreatedToast, setMeetingCreatedToast] = useState('')
 
   const canSeeAll = CAN_SEE_ALL.includes(user.globalRole ?? '')
   const effectiveOrgId = selectedOrgId ?? null
@@ -398,6 +549,7 @@ export function TasksPage({ user, selectedOrgId }: TasksPageProps) {
               onClose={() => setSelected(null)}
               onEdit={() => openEdit(selected)}
               onStatusChange={changeStatus}
+              onScheduleMeeting={() => setMeetingFromTask(selected)}
             />
           )}
         </div>
@@ -412,6 +564,22 @@ export function TasksPage({ user, selectedOrgId }: TasksPageProps) {
           onClose={() => { setShowModal(false); setEditing(undefined) }}
           onSave={handleSave}
         />
+      )}
+
+      {meetingFromTask && (
+        <MeetingFromTaskModal
+          task={meetingFromTask}
+          onClose={() => setMeetingFromTask(null)}
+          onCreated={() => setMeetingCreatedToast('Réunion créée ✓')}
+        />
+      )}
+
+      {meetingCreatedToast && (
+        <div onAnimationEnd={() => setMeetingCreatedToast('')}
+          style={{ position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', background: '#0f172a', color: '#fff', padding: '10px 18px', borderRadius: 999, fontSize: 13, fontWeight: 600, boxShadow: '0 12px 28px rgba(15,23,42,0.3)', zIndex: 400, animation: 'fadeToast 2.4s forwards' }}>
+          <style>{`@keyframes fadeToast { 0% { opacity: 0; transform: translate(-50%, 10px) } 12% { opacity: 1; transform: translate(-50%, 0) } 88% { opacity: 1 } 100% { opacity: 0; transform: translate(-50%, -10px) } }`}</style>
+          {meetingCreatedToast}
+        </div>
       )}
     </div>
   )

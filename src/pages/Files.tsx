@@ -1,7 +1,14 @@
 import { useState, useEffect } from 'react'
 import { SIcon } from '../components/icons/SIcon'
 import type { User } from '../types'
-import { getMyRecordings, deleteRecording, getDownloadUrl, type RecordingDto } from '../api/recordings'
+import { getMyRecordings, deleteRecording, getDownloadUrl, getPlayUrl, type RecordingDto } from '../api/recordings'
+import {
+  deleteMeetingFile,
+  getMyMeetingFiles,
+  getMeetingFileDownloadUrl,
+  getMeetingFileViewUrl,
+  type MeetingFileDto,
+} from '../api/meetingFiles'
 
 // ── Static mock folders & files (unchanged) ───────────────────────────────────
 
@@ -78,23 +85,46 @@ export function FilesPage({ user: _user }: FilesPageProps) {
   const [openFolder, setOpenFolder] = useState<FolderItem | null>(null)
   const [selected, setSelected]     = useState<FileItem | RecordingDto | null>(null)
 
-  // Recordings state
+  // Recordings + shared meeting files state
   const [recordings, setRecordings] = useState<RecordingDto[]>([])
+  const [meetingFiles, setMeetingFiles] = useState<MeetingFileDto[]>([])
   const [recLoading, setRecLoading] = useState(false)
   const [deleting, setDeleting]     = useState<number | null>(null)
 
   useEffect(() => {
     setRecLoading(true)
-    getMyRecordings()
-      .then(setRecordings)
-      .catch(() => {})
-      .finally(() => setRecLoading(false))
+    Promise.all([
+      getMyRecordings().catch(() => [] as RecordingDto[]),
+      getMyMeetingFiles().catch(() => [] as MeetingFileDto[]),
+    ]).then(([recs, files]) => {
+      setRecordings(recs)
+      setMeetingFiles(files)
+    }).finally(() => setRecLoading(false))
   }, [])
 
-  const uniqueMeetings = Array.from(new Map(recordings.map(r => [r.meetingId, r])).values())
+  // Union of all meetings that have recordings OR shared files
+  const meetingMap = new Map<number, { meetingId: number; meetingSubject: string; meetingDate: string; organizationName: string; recCount: number; fileCount: number; latest: string }>()
+  recordings.forEach(r => {
+    const cur = meetingMap.get(r.meetingId)
+    const recCount = (cur?.recCount ?? 0) + 1
+    const fileCount = cur?.fileCount ?? 0
+    const latest = cur && cur.latest > r.recordedAt ? cur.latest : r.recordedAt
+    meetingMap.set(r.meetingId, { meetingId: r.meetingId, meetingSubject: r.meetingSubject, meetingDate: r.meetingDate, organizationName: r.organizationName, recCount, fileCount, latest })
+  })
+  meetingFiles.forEach(f => {
+    const cur = meetingMap.get(f.meetingId)
+    const recCount = cur?.recCount ?? 0
+    const fileCount = (cur?.fileCount ?? 0) + 1
+    const latest = cur && cur.latest > f.uploadedAt ? cur.latest : f.uploadedAt
+    meetingMap.set(f.meetingId, { meetingId: f.meetingId, meetingSubject: f.meetingSubject, meetingDate: f.meetingDate, organizationName: f.organizationName, recCount, fileCount, latest })
+  })
+  const uniqueMeetings = Array.from(meetingMap.values()).sort((a, b) => b.latest.localeCompare(a.latest))
+
+  const totalMeetingItems = recordings.length + meetingFiles.length
+  const latestIso = uniqueMeetings[0]?.latest
 
   const FOLDERS: FolderItem[] = [
-    { id:'réunions', name:'Réunions', color:'#ef4444', icon:'Video', virtual:true, files: recordings.length, updated: recordings.length > 0 ? fmtDate(recordings[0].recordedAt) : '—' },
+    { id:'réunions', name:'Réunions', color:'#ef4444', icon:'Video', virtual:true, files: totalMeetingItems, updated: latestIso ? fmtDate(latestIso) : '—' },
     { id:'f2', name:'Comptes-rendus', color:'#6366f1', icon:'FileText', files:18, updated:'Hier' },
     { id:'f3', name:'Présentations',  color:'#0ea5e9', icon:'Presentation', files:11, updated:'Lundi' },
     { id:'f4', name:'Projet Nexus',   color:'#f97316', icon:'FolderOpen', files:34, updated:'Mar.' },
@@ -221,18 +251,27 @@ export function FilesPage({ user: _user }: FilesPageProps) {
               ) : (
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px, 1fr))', gap:12 }}>
                   {uniqueMeetings.map(r => {
-                    const count = recordings.filter(x => x.meetingId === r.meetingId).length
+                    const folderDate = r.meetingDate ? (() => {
+                      try { return new Date(r.meetingDate).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }) }
+                      catch { return r.meetingDate }
+                    })() : '—'
                     return (
                       <div key={r.meetingId} onClick={() => setOpenMeetingId(r.meetingId)}
                         style={{ background:'#fff', borderRadius:'var(--ms-radius)', border:'var(--ms-border-width) solid #e8edf2', padding:'16px 14px', cursor:'pointer', transition:'all 0.15s', boxShadow:'var(--ms-shadow)' }}
                         onMouseEnter={e => { e.currentTarget.style.borderColor='#cbd5e1'; e.currentTarget.style.transform='translateY(-1px)' }}
                         onMouseLeave={e => { e.currentTarget.style.borderColor='#e8edf2'; e.currentTarget.style.transform='none' }}>
                         <div style={{ width:40, height:40, borderRadius:'var(--ms-radius-sm)', background:'#fef2f2', display:'flex', alignItems:'center', justifyContent:'center', marginBottom:10 }}>
-                          <SIcon name="Video" size={20} color="#ef4444" />
+                          <SIcon name="FolderOpen" size={20} color="#ef4444" />
                         </div>
-                        <p style={{ color:'#0f172a', fontSize:13, fontWeight:600, marginBottom:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.meetingSubject}</p>
+                        <p style={{ color:'#0f172a', fontSize:13, fontWeight:600, marginBottom:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>Réunion {r.meetingSubject}</p>
                         <p style={{ color:'#64748b', fontSize:11, marginBottom:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{r.organizationName}</p>
-                        <p style={{ color:'#94a3b8', fontSize:10 }}>{r.meetingDate} · {count} enreg.</p>
+                        <p style={{ color:'#94a3b8', fontSize:10 }}>
+                          {folderDate}
+                          {(r.recCount > 0 || r.fileCount > 0) && ' · '}
+                          {r.recCount > 0 && `${r.recCount} enreg.`}
+                          {r.recCount > 0 && r.fileCount > 0 && ' · '}
+                          {r.fileCount > 0 && `${r.fileCount} fichier${r.fileCount > 1 ? 's' : ''}`}
+                        </p>
                       </div>
                     )
                   })}
@@ -241,9 +280,15 @@ export function FilesPage({ user: _user }: FilesPageProps) {
             </>
           )}
 
-          {/* ── Individual meeting recordings ────────────────────────────────── */}
-          {openFolder?.virtual && openMeetingId != null && (
-            <div style={{ background:'#fff', borderRadius:'var(--ms-radius)', border:'var(--ms-border-width) solid #e8edf2', overflow:'hidden', boxShadow:'var(--ms-shadow)' }}>
+          {/* ── Per-meeting view: recordings + shared files ─────────────────── */}
+          {openFolder?.virtual && openMeetingId != null && (() => {
+            const meetingFilesForMeeting = meetingFiles.filter(f => f.meetingId === openMeetingId
+              && (!search || f.fileName.toLowerCase().includes(search.toLowerCase())))
+            return (<>
+            {visibleRecs.length > 0 && (
+              <h3 style={{ color:'#64748b', fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:0.5, marginBottom:8 }}>Enregistrements</h3>
+            )}
+            <div style={{ background:'#fff', borderRadius:'var(--ms-radius)', border:'var(--ms-border-width) solid #e8edf2', overflow:'hidden', boxShadow:'var(--ms-shadow)', marginBottom:24 }}>
               <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 90px', padding:'10px 20px', borderBottom:'1px solid #f1f5f9', background:'#f8fafc' }}>
                 {['Fichier','Enregistré par','Taille','Date','Actions'].map(h => (
                   <span key={h} style={{ color:'#64748b', fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:0.4 }}>{h}</span>
@@ -292,7 +337,63 @@ export function FilesPage({ user: _user }: FilesPageProps) {
                 )
               })}
             </div>
-          )}
+
+            {/* Shared files for the meeting */}
+            <h3 style={{ color:'#64748b', fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:0.5, marginBottom:8 }}>Fichiers partagés</h3>
+            <div style={{ background:'#fff', borderRadius:'var(--ms-radius)', border:'var(--ms-border-width) solid #e8edf2', overflow:'hidden', boxShadow:'var(--ms-shadow)' }}>
+              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 110px', padding:'10px 20px', borderBottom:'1px solid #f1f5f9', background:'#f8fafc' }}>
+                {['Fichier','Partagé par','Taille','Date','Actions'].map(h => (
+                  <span key={h} style={{ color:'#64748b', fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:0.4 }}>{h}</span>
+                ))}
+              </div>
+              {meetingFilesForMeeting.length === 0 ? (
+                <div style={{ padding:48, textAlign:'center' }}>
+                  <p style={{ color:'#94a3b8', fontSize:14 }}>Aucun fichier partagé</p>
+                </div>
+              ) : meetingFilesForMeeting.map((f, i) => (
+                <div key={f.id}
+                  style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 110px', padding:'12px 20px', borderBottom: i < meetingFilesForMeeting.length - 1 ? '1px solid #f8fafc' : 'none', transition:'background 0.13s' }}
+                  onMouseEnter={e => { e.currentTarget.style.background='#f8fafc' }}
+                  onMouseLeave={e => { e.currentTarget.style.background='transparent' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:10, minWidth:0 }}>
+                    <div style={{ width:32, height:32, borderRadius:8, background:'#eff6ff', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                      <SIcon name="FileText" size={16} color="#2563eb" />
+                    </div>
+                    <p style={{ color:'#0f172a', fontSize:13, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{f.fileName}</p>
+                  </div>
+                  <span style={{ color:'#64748b', fontSize:12, display:'flex', alignItems:'center' }}>{f.uploadedByName}</span>
+                  <span style={{ color:'#64748b', fontSize:13, display:'flex', alignItems:'center' }}>{fmtBytes(f.fileSizeBytes)}</span>
+                  <span style={{ color:'#94a3b8', fontSize:12, display:'flex', alignItems:'center' }}>{fmtDate(f.uploadedAt)}</span>
+                  <div style={{ display:'flex', alignItems:'center', gap:4 }}>
+                    <a href={getMeetingFileViewUrl(f.id)} target="_blank" rel="noopener noreferrer" title="Ouvrir dans un nouvel onglet"
+                      style={{ background:'none', border:'none', cursor:'pointer', padding:5, borderRadius:6, color:'var(--ms-accent)', display:'flex', textDecoration:'none' }}>
+                      <SIcon name="ExternalLink" size={14} color="currentColor" />
+                    </a>
+                    <a href={getMeetingFileDownloadUrl(f.id)} download title="Télécharger"
+                      style={{ background:'none', border:'none', cursor:'pointer', padding:5, borderRadius:6, color:'#94a3b8', display:'flex', textDecoration:'none' }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color='var(--ms-accent)' }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color='#94a3b8' }}>
+                      <SIcon name="Download" size={14} color="currentColor" />
+                    </a>
+                    <button onClick={async () => {
+                      try {
+                        setDeleting(f.id)
+                        await deleteMeetingFile(f.id)
+                        setMeetingFiles(prev => prev.filter(x => x.id !== f.id))
+                      } catch { /* silent */ } finally { setDeleting(null) }
+                    }} disabled={deleting === f.id}
+                      title="Supprimer"
+                      style={{ background:'none', border:'none', cursor:'pointer', padding:5, borderRadius:6, color:'#94a3b8', display:'flex' }}
+                      onMouseEnter={e => { e.currentTarget.style.color='#ef4444' }}
+                      onMouseLeave={e => { e.currentTarget.style.color='#94a3b8' }}>
+                      <SIcon name="Trash2" size={14} color="currentColor" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            </>)
+          })()}
 
           {/* ── Regular folder content ───────────────────────────────────────── */}
           {openFolder && !openFolder.virtual && (
@@ -388,12 +489,14 @@ export function FilesPage({ user: _user }: FilesPageProps) {
               </button>
             </div>
             <div style={{ flex:1, overflowY:'auto', padding:20 }}>
-              <div style={{ textAlign:'center', marginBottom:20 }}>
-                <div style={{ width:56, height:56, borderRadius:12, background:'#fef2f2', display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 12px' }}>
-                  <SIcon name="Video" size={28} color="#ef4444" />
-                </div>
-                <p style={{ color:'#0f172a', fontSize:13, fontWeight:700, lineHeight:1.4 }}>{(selected as RecordingDto).fileName}</p>
-              </div>
+              <video
+                key={(selected as RecordingDto).id}
+                src={getPlayUrl((selected as RecordingDto).id)}
+                controls
+                playsInline
+                style={{ width:'100%', borderRadius:'var(--ms-radius-sm)', background:'#000', marginBottom:14 }}
+              />
+              <p style={{ color:'#0f172a', fontSize:13, fontWeight:700, lineHeight:1.4, marginBottom:14, wordBreak:'break-all' }}>{(selected as RecordingDto).fileName}</p>
               {[
                 { label:'Réunion',       value: (selected as RecordingDto).meetingSubject },
                 { label:'Organisation',  value: (selected as RecordingDto).organizationName },

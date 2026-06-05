@@ -1,7 +1,7 @@
 import { api } from '../services/api';
 import { loadSession } from '../utils/session';
 
-export interface RecordingDto {
+export interface MeetingFileDto {
   id: number;
   meetingId: number;
   meetingSubject: string;
@@ -10,45 +10,47 @@ export interface RecordingDto {
   organizationName: string;
   fileName: string;
   fileSizeBytes: number;
-  recordedAt: string;
-  recordedByName: string;
+  contentType?: string;
+  uploadedAt: string;
+  uploadedByName: string;
+  uploadedById: number;
 }
 
-export const getMyRecordings = () =>
-  api.get<RecordingDto[]>('/recordings/mine');
+export const getMyMeetingFiles = () =>
+  api.get<MeetingFileDto[]>('/meeting-files/mine');
 
-export const getMeetingRecordings = (orgId: number, meetingId: number) =>
-  api.get<RecordingDto[]>(`/organizations/${orgId}/meetings/${meetingId}/recordings`);
+export const getMeetingFiles = (orgId: number, meetingId: number) =>
+  api.get<MeetingFileDto[]>(`/organizations/${orgId}/meetings/${meetingId}/files`);
 
-export const deleteRecording = (id: number) =>
-  api.delete<void>(`/recordings/${id}`);
+export const deleteMeetingFile = (id: number) =>
+  api.delete<void>(`/meeting-files/${id}`);
 
-export function getDownloadUrl(id: number): string {
+export function getMeetingFileViewUrl(id: number): string {
   const BASE = import.meta.env.VITE_API_URL as string;
   const token = loadSession()?.token ?? '';
-  return `${BASE}/recordings/${id}/download?token=${encodeURIComponent(token)}`;
+  return `${BASE}/meeting-files/${id}/download?inline=true&token=${encodeURIComponent(token)}`;
 }
 
-export function getPlayUrl(id: number): string {
+export function getMeetingFileDownloadUrl(id: number): string {
   const BASE = import.meta.env.VITE_API_URL as string;
   const token = loadSession()?.token ?? '';
-  return `${BASE}/recordings/${id}/download?inline=true&token=${encodeURIComponent(token)}`;
+  return `${BASE}/meeting-files/${id}/download?token=${encodeURIComponent(token)}`;
 }
 
-export async function uploadRecording(
+export async function uploadMeetingFile(
   orgId: number,
   meetingId: number,
-  blob: Blob,
+  file: File,
   onProgress?: (pct: number) => void,
-): Promise<RecordingDto> {
+): Promise<MeetingFileDto> {
   const BASE = import.meta.env.VITE_API_URL as string;
   const token = loadSession()?.token ?? '';
   const form = new FormData();
-  form.append('file', blob, `recording-${Date.now()}.webm`);
+  form.append('file', file, file.name);
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${BASE}/organizations/${orgId}/meetings/${meetingId}/recordings`);
+    xhr.open('POST', `${BASE}/organizations/${orgId}/meetings/${meetingId}/files`);
     xhr.setRequestHeader('Authorization', `Bearer ${token}`);
     if (onProgress) {
       xhr.upload.onprogress = (e) => {
@@ -57,7 +59,7 @@ export async function uploadRecording(
     }
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText) as RecordingDto);
+        resolve(JSON.parse(xhr.responseText) as MeetingFileDto);
       } else {
         reject(new Error(`Upload failed: ${xhr.status}`));
       }

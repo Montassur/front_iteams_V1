@@ -45,6 +45,12 @@ export const addParticipant = (orgId: number, meetingId: number, userId: number,
 export const removeParticipant = (orgId: number, meetingId: number, userId: number) =>
   api.delete<void>(`${base(orgId)}/${meetingId}/participants/${userId}`);
 
+export const updateParticipantRole = (orgId: number, meetingId: number, userId: number, role: MeetingRole) =>
+  api.put<ParticipationDto>(`${base(orgId)}/${meetingId}/participants/${userId}/role`, { role });
+
+export const endMeetingForAll = (orgId: number, meetingId: number) =>
+  api.post<void>(`${base(orgId)}/${meetingId}/end-for-all`, {});
+
 // Agenda
 export const getAgenda = (orgId: number, meetingId: number) =>
   api.get<AgendaItemDto[]>(`${base(orgId)}/${meetingId}/agenda`);

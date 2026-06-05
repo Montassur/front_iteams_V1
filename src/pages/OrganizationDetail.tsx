@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { listMemberships, removeMembership } from '../api/memberships';
 import { getOrganization } from '../api/organizations';
+import { getMeetingStats, getMeetings } from '../api/meetings';
 import { SIcon } from '../components/icons/SIcon';
 import type { User as SessionUser } from '../types';
 import type { OrganizationDetail, OrganizationMembershipResponse } from '../types/admin';
+import type { MeetingListItem, MeetingStatsDto } from '../types/meeting';
 
 interface Props { organizationId: number; user: SessionUser; onBack: () => void; }
 
@@ -33,10 +35,170 @@ function StatCard({ icon, label, value, accent }: { icon: string; label: string;
   );
 }
 
+function StatsPanel({ stats, meetings, loading }: { stats: MeetingStatsDto | null; meetings: MeetingListItem[]; loading: boolean }) {
+  // ── Frequency: meetings per week over the last 8 weeks ──────────────────────
+  const weekBuckets = useMemo(() => {
+    const now = new Date();
+    const buckets: { label: string; count: number; startMs: number }[] = [];
+    for (let i = 7; i >= 0; i--) {
+      const start = new Date(now); start.setDate(now.getDate() - i * 7); start.setHours(0, 0, 0, 0);
+      const end = new Date(start); end.setDate(start.getDate() + 7);
+      const startMs = start.getTime();
+      const endMs = end.getTime();
+      const count = meetings.filter((m) => {
+        const t = new Date(m.scheduledDateTime).getTime();
+        return t >= startMs && t < endMs;
+      }).length;
+      buckets.push({
+        label: start.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }),
+        count,
+        startMs,
+      });
+    }
+    return buckets;
+  }, [meetings]);
+
+  const last30dCount = useMemo(() => {
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    return meetings.filter((m) => new Date(m.scheduledDateTime).getTime() >= cutoff).length;
+  }, [meetings]);
+
+  const last7dCount = useMemo(() => {
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    return meetings.filter((m) => new Date(m.scheduledDateTime).getTime() >= cutoff).length;
+  }, [meetings]);
+
+  const peakWeek = weekBuckets.reduce((max, b) => Math.max(max, b.count), 0);
+
+  // ── Efficacité ──────────────────────────────────────────────────────────────
+  const taskCompletion = stats && stats.totalTasks > 0
+    ? Math.round((stats.completedTasks / stats.totalTasks) * 100)
+    : null;
+  const completionRate = stats && stats.totalMeetings > 0
+    ? Math.round((stats.completedMeetings / stats.totalMeetings) * 100)
+    : null;
+  const cancellationRate = stats && stats.totalMeetings > 0
+    ? Math.round((stats.cancelledMeetings / stats.totalMeetings) * 100)
+    : null;
+
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e8edf2', borderRadius: 16, overflow: 'hidden', boxShadow: '0 1px 4px rgba(15,23,42,0.06)' }}>
+      <div style={{ padding: '14px 18px', background: '#f8fafc', borderBottom: '1px solid #f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <SIcon name="BarChart3" size={14} color="#64748b" />
+          <strong style={{ fontSize: 14, color: '#0f172a' }}>Statistiques</strong>
+        </div>
+        <span style={{ fontSize: 11, color: '#94a3b8' }}>Réservé aux managers et superviseurs</span>
+      </div>
+
+      {loading ? (
+        <div style={{ padding: 32, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>Chargement…</div>
+      ) : !stats || stats.totalMeetings === 0 ? (
+        <div style={{ padding: 40, textAlign: 'center' }}>
+          <div style={{ width: 48, height: 48, borderRadius: 14, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px' }}>
+            <SIcon name="BarChart3" size={20} color="#cbd5e1" />
+          </div>
+          <p style={{ margin: 0, fontWeight: 700, color: '#0f172a', fontSize: 14 }}>Pas encore de données</p>
+          <p style={{ margin: '4px 0 0', color: '#94a3b8', fontSize: 13 }}>Les statistiques apparaîtront après les premières réunions.</p>
+        </div>
+      ) : (
+        <div style={{ padding: '18px 20px', display: 'grid', gap: 20 }}>
+          {/* Top metrics row */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+            <MetricBlock icon="CalendarDays" accent="#0ea5e9"
+              value={stats.totalMeetings.toString()} label="Réunions au total"
+              sub={`${last30dCount} sur 30 j · ${last7dCount} sur 7 j`} />
+            <MetricBlock icon="Clock" accent="#f59e0b"
+              value={`${Math.round(stats.averageDurationMinutes)} min`} label="Durée moyenne"
+              sub="par réunion" />
+            <MetricBlock icon="Target" accent="#10b981"
+              value={completionRate != null ? `${completionRate}%` : '—'} label="Taux de complétion"
+              sub={`${stats.completedMeetings} terminées · ${stats.cancelledMeetings} annulées`} />
+            <MetricBlock icon="CheckSquare" accent="#7c3aed"
+              value={taskCompletion != null ? `${taskCompletion}%` : '—'} label="Efficacité (tâches)"
+              sub={`${stats.completedTasks}/${stats.totalTasks} faites`} />
+          </div>
+
+          {/* Weekly frequency chart */}
+          <div>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
+              <strong style={{ fontSize: 13, color: '#0f172a' }}>Fréquence — 8 dernières semaines</strong>
+              <span style={{ fontSize: 11, color: '#94a3b8' }}>{Math.round((last30dCount / 4) * 10) / 10} réunions/semaine en moyenne</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6, height: 100, padding: '0 4px' }}>
+              {weekBuckets.map((b) => {
+                const heightPct = peakWeek > 0 ? (b.count / peakWeek) * 100 : 0;
+                return (
+                  <div key={b.startMs} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>{b.count || ''}</div>
+                    <div style={{ width: '100%', flex: 1, display: 'flex', alignItems: 'flex-end' }}>
+                      <div style={{
+                        width: '100%',
+                        height: `${Math.max(heightPct, b.count > 0 ? 6 : 0)}%`,
+                        background: b.count > 0 ? 'linear-gradient(180deg, #6366f1, #8b5cf6)' : '#f1f5f9',
+                        borderRadius: 4,
+                        transition: 'height 0.3s',
+                      }} />
+                    </div>
+                    <div style={{ fontSize: 9, color: '#94a3b8' }}>{b.label}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Effectiveness rows */}
+          <div style={{ display: 'grid', gap: 10 }}>
+            <ProgressRow label="Réunions terminées" value={completionRate ?? 0} color="#10b981"
+              caption={`${stats.completedMeetings}/${stats.totalMeetings}`} />
+            <ProgressRow label="Tâches accomplies" value={taskCompletion ?? 0} color="#7c3aed"
+              caption={`${stats.completedTasks}/${stats.totalTasks}`} />
+            <ProgressRow label="Réunions annulées" value={cancellationRate ?? 0} color="#ef4444"
+              caption={`${stats.cancelledMeetings}/${stats.totalMeetings}`} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricBlock({ icon, accent, value, label, sub }: { icon: string; accent: string; value: string; label: string; sub?: string }) {
+  return (
+    <div style={{ background: '#f8fafc', borderRadius: 12, padding: '14px 16px', border: '1px solid #f1f5f9' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <div style={{ width: 32, height: 32, borderRadius: 9, background: `${accent}18`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <SIcon name={icon as any} size={15} color={accent} />
+        </div>
+        <div style={{ fontSize: 10, fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+      </div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: '#0f172a' }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function ProgressRow({ label, value, color, caption }: { label: string; value: number; color: string; caption?: string }) {
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 12 }}>
+        <span style={{ color: '#475569', fontWeight: 600 }}>{label}</span>
+        <span style={{ color: '#94a3b8' }}>{caption} · <strong style={{ color: '#0f172a' }}>{value}%</strong></span>
+      </div>
+      <div style={{ height: 6, background: '#f1f5f9', borderRadius: 999, overflow: 'hidden' }}>
+        <div style={{ width: `${Math.min(100, Math.max(0, value))}%`, height: '100%', background: color, borderRadius: 999, transition: 'width 0.3s' }} />
+      </div>
+    </div>
+  );
+}
+
 export function OrganizationDetailPage({ organizationId, user, onBack }: Props) {
   const canRemove = ['OWNER', 'ADMIN'].includes(user.globalRole ?? '');
+  const canSeeStats = ['OWNER', 'ADMIN', 'SUPERVISOR', 'MANAGER'].includes(user.globalRole ?? '');
   const [organization, setOrganization] = useState<OrganizationDetail | null>(null);
   const [members, setMembers] = useState<OrganizationMembershipResponse[]>([]);
+  const [stats, setStats] = useState<MeetingStatsDto | null>(null);
+  const [meetings, setMeetings] = useState<MeetingListItem[]>([]);
+  const [statsLoading, setStatsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
@@ -60,6 +222,18 @@ export function OrganizationDetailPage({ organizationId, user, onBack }: Props) 
   };
 
   useEffect(() => { void load(); }, [organizationId]);
+
+  useEffect(() => {
+    if (!canSeeStats) return;
+    setStatsLoading(true);
+    Promise.all([
+      getMeetingStats(organizationId).catch(() => null),
+      getMeetings(organizationId).catch(() => [] as MeetingListItem[]),
+    ]).then(([s, m]) => {
+      setStats(s);
+      setMeetings(m);
+    }).finally(() => setStatsLoading(false));
+  }, [organizationId, canSeeStats]);
 
   const filtered = useMemo(
     () => members.filter((m) => `${m.userName ?? ''} ${m.userId}`.toLowerCase().includes(search.toLowerCase())),
@@ -152,6 +326,11 @@ export function OrganizationDetailPage({ organizationId, user, onBack }: Props) 
               <StatCard icon="Shield" label="Propriétaire" value={organization.ownerName ?? (organization.ownerId ? `#${organization.ownerId}` : '—')} accent="#7c3aed" />
               <StatCard icon="Users" label="Membres" value={members.length} accent="#10b981" />
             </div>
+
+            {/* Statistiques (managers / supervisors / owners only) */}
+            {canSeeStats && (
+              <StatsPanel stats={stats} meetings={meetings} loading={statsLoading} />
+            )}
 
             {/* Members list */}
             <div style={{ background: '#fff', border: '1px solid #e8edf2', borderRadius: 16, overflow: 'hidden', boxShadow: '0 1px 4px rgba(15,23,42,0.06)' }}>

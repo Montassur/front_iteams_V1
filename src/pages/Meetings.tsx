@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { SIcon } from '../components/icons/SIcon';
+import { MeetingReportModal } from '../components/MeetingReportModal';
 import type { PageId, User } from '../types';
 import type { MeetingListItem, MeetingStatus, CreateMeetingPayload } from '../types/meeting';
 import { getMeetings, createMeeting, deleteMeeting, updateMeeting } from '../api/meetings';
 import { listOrganizations } from '../api/organizations';
+import { todayInputValue, tomorrowInputValue, nextQuarterHourValue, localTimeInputValue } from '../utils/dateInput';
 import type { OrganizationSummary } from '../types/admin';
 
 interface MeetingsProps {
@@ -25,6 +27,41 @@ export function Meetings({ user, selectedOrgId, setPage: _setPage, onJoinMeeting
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<MeetingListItem | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [reportFor, setReportFor] = useState<{ orgId: number; meetingId: number } | null>(null);
+  const [startingInstant, setStartingInstant] = useState(false);
+
+  // Create a meeting that's scheduled "right now" and immediately jump into it.
+  const handleStartInstant = async () => {
+    if (!activeOrgId || startingInstant) return;
+    setStartingInstant(true);
+    try {
+      // Stamp 60s in the past so the server's "scheduled in the future" gate
+      // can't reject the join due to clock skew between client and server.
+      const start = new Date(Date.now() - 60_000);
+      const iso = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}T${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}:${String(start.getSeconds()).padStart(2, '0')}`;
+      const created = await createMeeting(activeOrgId, {
+        subject: 'Réunion instantanée',
+        description: 'Démarrée à la volée',
+        scheduledDateTime: iso,
+        plannedDurationMinutes: 60,
+      });
+      const item: MeetingListItem = {
+        id: created.id, subject: created.subject, description: created.description,
+        scheduledDateTime: created.scheduledDateTime, plannedDurationMinutes: created.plannedDurationMinutes,
+        status: created.status, organizationId: created.organizationId, organizationName: created.organizationName,
+        moderatorId: created.moderatorId, moderatorName: created.moderatorName,
+        participantCount: created.participants.length,
+        agendaItemCount: created.agendaItems.length,
+        taskCount: created.tasks.length,
+      };
+      setMeetings((prev) => [item, ...prev]);
+      onJoinMeeting(created.id, created.organizationId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Impossible de démarrer la réunion');
+    } finally {
+      setStartingInstant(false);
+    }
+  };
 
   const canManage = ['OWNER', 'SUPERVISOR', 'MANAGER'].includes(user.globalRole ?? '');
 
@@ -61,8 +98,8 @@ export function Meetings({ user, selectedOrgId, setPage: _setPage, onJoinMeeting
     return true;
   });
 
-  const today = new Date().toISOString().slice(0, 10);
-  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const today = todayInputValue();
+  const tomorrow = tomorrowInputValue();
   const grouped = filtered.reduce<Record<string, MeetingListItem[]>>((acc, m) => {
     const day = m.scheduledDateTime.slice(0, 10);
     if (!acc[day]) acc[day] = [];
@@ -137,15 +174,27 @@ export function Meetings({ user, selectedOrgId, setPage: _setPage, onJoinMeeting
           </div>
 
           {canManage && activeOrgId && (
-            <button onClick={() => setShowCreate(true)} style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px',
-              borderRadius: 'var(--ms-radius-sm)', border: 'none',
-              background: 'var(--ms-accent)', color: '#fff', fontWeight: 600, fontSize: 13,
-              cursor: 'pointer', fontFamily: 'inherit', boxShadow: '0 1px 4px var(--ms-accent-glow)', flexShrink: 0,
-            }}>
-              <SIcon name="Plus" size={14} color="#fff" sw={2.5} />
-              Nouvelle réunion
-            </button>
+            <>
+              <button onClick={() => setShowCreate(true)} style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px',
+                borderRadius: 'var(--ms-radius-sm)', border: 'none',
+                background: 'var(--ms-accent)', color: '#fff', fontWeight: 600, fontSize: 13,
+                cursor: 'pointer', fontFamily: 'inherit', boxShadow: '0 1px 4px var(--ms-accent-glow)', flexShrink: 0,
+              }}>
+                <SIcon name="Plus" size={14} color="#fff" sw={2.5} />
+                Nouvelle réunion
+              </button>
+              <button onClick={handleStartInstant} disabled={startingInstant} title="Créer et démarrer immédiatement" style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '7px 14px',
+                borderRadius: 'var(--ms-radius-sm)', border: '1px solid #16a34a',
+                background: startingInstant ? '#86efac' : '#16a34a', color: '#fff', fontWeight: 600, fontSize: 13,
+                cursor: startingInstant ? 'wait' : 'pointer', fontFamily: 'inherit', flexShrink: 0,
+                boxShadow: '0 1px 4px rgba(22,163,74,0.35)',
+              }}>
+                <SIcon name="Video" size={14} color="#fff" sw={2.5} />
+                {startingInstant ? 'Démarrage…' : 'Démarrer maintenant'}
+              </button>
+            </>
           )}
         </div>
 
@@ -175,6 +224,7 @@ export function Meetings({ user, selectedOrgId, setPage: _setPage, onJoinMeeting
                     onJoin={() => onJoinMeeting(m.id, m.organizationId)}
                     onDelete={() => handleDelete(m)}
                     onStatusChange={(st) => handleStatusChange(m, st)}
+                    onReport={() => setReportFor({ orgId: m.organizationId, meetingId: m.id })}
                   />
                 ))}
               </div>
@@ -190,6 +240,15 @@ export function Meetings({ user, selectedOrgId, setPage: _setPage, onJoinMeeting
           onClose={() => setSelected(null)}
           onJoin={() => onJoinMeeting(selected.id, selected.organizationId)}
           onDelete={() => handleDelete(selected)}
+          onReport={() => setReportFor({ orgId: selected.organizationId, meetingId: selected.id })}
+        />
+      )}
+
+      {reportFor && (
+        <MeetingReportModal
+          orgId={reportFor.orgId}
+          meetingId={reportFor.meetingId}
+          onClose={() => setReportFor(null)}
         />
       )}
 
@@ -227,9 +286,10 @@ interface MeetingRowProps {
   onJoin: () => void;
   onDelete: () => void;
   onStatusChange: (s: MeetingStatus) => void;
+  onReport: () => void;
 }
 
-function MeetingRow({ meeting: m, selected, canManage, onClick, onJoin, onDelete, onStatusChange }: MeetingRowProps) {
+function MeetingRow({ meeting: m, selected, canManage, onClick, onJoin, onDelete, onStatusChange, onReport }: MeetingRowProps) {
   const color = statusColor(m.status);
   const time = new Date(m.scheduledDateTime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 
@@ -262,13 +322,31 @@ function MeetingRow({ meeting: m, selected, canManage, onClick, onJoin, onDelete
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
         {m.status === 'SCHEDULED' && (
           <>
-            <button onClick={onJoin} style={{ padding: '5px 12px', borderRadius: 'var(--ms-radius-sm)', border: 'none', background: color, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>Rejoindre</button>
-            {canManage && (
-              <button onClick={() => onStatusChange('COMPLETED')} title="Marquer terminée" style={{ padding: '5px 8px', borderRadius: 'var(--ms-radius-sm)', border: 'var(--ms-border-width) solid #e2e8f0', background: '#fff', color: '#64748b', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>✓</button>
+            {new Date(m.scheduledDateTime).getTime() <= Date.now() ? (
+              <>
+                <button onClick={onJoin} style={{ padding: '5px 12px', borderRadius: 'var(--ms-radius-sm)', border: 'none', background: color, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>Rejoindre</button>
+                {canManage && (
+                  <button onClick={() => onStatusChange('COMPLETED')} title="Marquer terminée" style={{ padding: '5px 8px', borderRadius: 'var(--ms-radius-sm)', border: 'var(--ms-border-width) solid #e2e8f0', background: '#fff', color: '#64748b', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>✓</button>
+                )}
+              </>
+            ) : (
+              <>
+                <span title={`Démarre à ${time}`} style={{ padding: '5px 10px', borderRadius: 'var(--ms-radius-sm)', background: '#f1f5f9', color: '#64748b', fontSize: 11, fontWeight: 600 }}>Pas encore</span>
+                {canManage && (
+                  <button onClick={() => onStatusChange('CANCELLED')} title="Annuler la réunion" style={{ padding: '5px 8px', borderRadius: 'var(--ms-radius-sm)', border: '1px solid #fecaca', background: '#fff5f5', color: '#ef4444', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit' }}>Annuler</button>
+                )}
+              </>
             )}
           </>
         )}
-        {m.status === 'COMPLETED' && <span style={{ padding: '3px 8px', borderRadius: 'var(--ms-radius-sm)', background: '#f0fdf4', color: '#16a34a', fontSize: 11, fontWeight: 600 }}>Terminée</span>}
+        {m.status === 'COMPLETED' && (
+          <>
+            <button onClick={onReport} title="Voir le rapport" style={{ padding: '5px 10px', borderRadius: 'var(--ms-radius-sm)', border: 'var(--ms-border-width) solid #e2e8f0', background: '#fff', color: '#475569', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5 }}>
+              <SIcon name="FileText" size={12} color="#475569" /> Rapport
+            </button>
+            <span style={{ padding: '3px 8px', borderRadius: 'var(--ms-radius-sm)', background: '#f0fdf4', color: '#16a34a', fontSize: 11, fontWeight: 600 }}>Terminée</span>
+          </>
+        )}
         {m.status === 'IN_PROGRESS' && (
           <button onClick={onJoin} style={{ padding: '5px 12px', borderRadius: 'var(--ms-radius-sm)', border: 'none', background: color, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>Rejoindre</button>
         )}
@@ -290,9 +368,10 @@ interface DetailPanelProps {
   onClose: () => void;
   onJoin: () => void;
   onDelete: () => void;
+  onReport: () => void;
 }
 
-function MeetingDetailPanel({ meeting: m, canManage, onClose, onJoin, onDelete }: DetailPanelProps) {
+function MeetingDetailPanel({ meeting: m, canManage, onClose, onJoin, onDelete, onReport }: DetailPanelProps) {
   const color = statusColor(m.status);
   const dt = new Date(m.scheduledDateTime);
   const dateStr = dt.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
@@ -342,8 +421,22 @@ function MeetingDetailPanel({ meeting: m, canManage, onClose, onJoin, onDelete }
             <SIcon name="Trash2" size={13} color="#ef4444" />
           </button>
         )}
-        {(m.status === 'SCHEDULED' || m.status === 'IN_PROGRESS') && (
+        {m.status === 'IN_PROGRESS' && (
           <button onClick={onJoin} style={{ flex: 1, padding: 9, borderRadius: 'var(--ms-radius-sm)', border: 'none', background: color, color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', boxShadow: `0 2px 8px ${color}44` }}>Rejoindre</button>
+        )}
+        {m.status === 'COMPLETED' && (
+          <button onClick={onReport} style={{ flex: 1, padding: 9, borderRadius: 'var(--ms-radius-sm)', border: 'none', background: 'var(--ms-accent)', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', boxShadow: '0 2px 8px var(--ms-accent-glow)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+            <SIcon name="FileText" size={14} color="#fff" /> Voir le rapport
+          </button>
+        )}
+        {m.status === 'SCHEDULED' && (
+          new Date(m.scheduledDateTime).getTime() <= Date.now() ? (
+            <button onClick={onJoin} style={{ flex: 1, padding: 9, borderRadius: 'var(--ms-radius-sm)', border: 'none', background: color, color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', boxShadow: `0 2px 8px ${color}44` }}>Rejoindre</button>
+          ) : (
+            <div style={{ flex: 1, padding: 9, borderRadius: 'var(--ms-radius-sm)', background: '#f1f5f9', color: '#64748b', fontWeight: 700, fontSize: 13, textAlign: 'center', fontFamily: 'inherit' }}>
+              Pas encore commencée
+            </div>
+          )
         )}
       </div>
     </div>
@@ -359,14 +452,30 @@ interface CreateModalProps {
 }
 
 function CreateMeetingModal({ orgId, onClose, onCreated }: CreateModalProps) {
+  const today = todayInputValue();
   const [subject, setSubject] = useState('');
   const [description, setDescription] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
-  const [time, setTime] = useState('09:00');
+  const [date, setDate] = useState(today);
+  // Default time = next quarter-hour from now (today's date), so the meeting is
+  // never auto-scheduled in the past.
+  const [time, setTime] = useState(nextQuarterHourValue());
   const [duration, setDuration] = useState(60);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
   const [agendaItems, setAgendaItems] = useState<{ title: string; allocatedDurationMinutes: number }[]>([]);
+
+  // When the date is today, restrict the time input to "now or later".
+  // (When the date is in the future, no time constraint.)
+  const isTodaySelected = date === today;
+  const minTime = isTodaySelected ? localTimeInputValue() : undefined;
+
+  // If the user picks today and the current `time` value is already in the past,
+  // bump it forward to the next quarter-hour so submit can't fail.
+  useEffect(() => {
+    if (!isTodaySelected) return;
+    const nowHM = localTimeInputValue();
+    if (time < nowHM) setTime(nextQuarterHourValue());
+  }, [isTodaySelected, date, time]);
 
   const addAgendaItem = () => setAgendaItems((prev) => [...prev, { title: '', allocatedDurationMinutes: 15 }]);
   const removeAgendaItem = (i: number) => setAgendaItems((prev) => prev.filter((_, idx) => idx !== i));
@@ -375,6 +484,10 @@ function CreateMeetingModal({ orgId, onClose, onCreated }: CreateModalProps) {
 
   const handleSubmit = async () => {
     if (!subject.trim()) { setErr("L'objet est requis"); return; }
+    const scheduledMs = new Date(`${date}T${time}:00`).getTime();
+    if (!Number.isFinite(scheduledMs) || scheduledMs <= Date.now()) {
+      setErr('La date/heure doit être dans le futur.'); return;
+    }
     setSaving(true); setErr('');
     try {
       const payload: CreateMeetingPayload = {
@@ -422,10 +535,10 @@ function CreateMeetingModal({ orgId, onClose, onCreated }: CreateModalProps) {
           </FormField>
           <div style={{ display: 'flex', gap: 10 }}>
             <FormField label="Date *" style={{ flex: 1 }}>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
+              <input type="date" value={date} min={today} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
             </FormField>
             <FormField label="Heure *" style={{ width: 110 }}>
-              <input type="time" value={time} onChange={(e) => setTime(e.target.value)} style={inputStyle} />
+              <input type="time" value={time} min={minTime} onChange={(e) => setTime(e.target.value)} style={inputStyle} />
             </FormField>
             <FormField label="Durée (min)" style={{ width: 110 }}>
               <input type="number" value={duration} min={5} max={480} onChange={(e) => setDuration(Number(e.target.value))} style={inputStyle} />

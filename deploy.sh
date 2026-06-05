@@ -75,7 +75,10 @@ chown -R www-data:www-data "$WEB_ROOT"
 # 5. Apache2 — enable required modules
 # ─────────────────────────────────────────────────────────────────────────────
 info "Configuring Apache2…"
-a2enmod rewrite headers ssl 2>/dev/null || true
+# rewrite + headers + ssl: required by the vhost below.
+# deflate + expires + mime: gzip + long-cache hashed assets (PWA & perf).
+# http2: HTTP/2 over TLS for faster bundle delivery.
+a2enmod rewrite headers ssl deflate expires mime http2 2>/dev/null || true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. Apache2 — virtual host (sites-available)
@@ -91,19 +94,58 @@ cat > "$VHOST_FILE" <<APACHE
     ErrorLog  \${APACHE_LOG_DIR}/iteams_front_error.log
     CustomLog \${APACHE_LOG_DIR}/iteams_front_access.log combined
 
+    # ── Security headers ────────────────────────────────────────────────────
     Header always set X-Content-Type-Options "nosniff"
     Header always set X-Frame-Options "SAMEORIGIN"
-    Header always set X-XSS-Protection "1; mode=block"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    # HSTS is added only when --ssl is used (see post-cert step further down).
+
+    # ── PWA MIME types (override defaults to make sure they're correct) ─────
+    AddType application/manifest+json .webmanifest
+    AddType image/svg+xml .svg
+    AddType application/javascript .js
+    AddType application/wasm .wasm
+
+    # ── Gzip compression (huge win on the Vite bundle) ──────────────────────
+    <IfModule mod_deflate.c>
+        AddOutputFilterByType DEFLATE \\
+            text/html text/css text/plain text/xml \\
+            application/javascript application/json application/manifest+json \\
+            image/svg+xml application/xml application/x-font-ttf font/opentype
+    </IfModule>
+
+    # ── PWA-aware caching policy ────────────────────────────────────────────
+    # Service worker MUST NOT be cached — otherwise updates won't roll out.
+    <Files "sw.js">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+        Header set Pragma "no-cache"
+    </Files>
+    # Manifest: refetch frequently so manifest edits take effect.
+    <Files "manifest.webmanifest">
+        Header set Cache-Control "no-cache"
+    </Files>
+    # index.html: never cache — must be fresh so users always get latest asset hashes.
+    <Files "index.html">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+    </Files>
+    # Vite emits hashed filenames under /assets/*; safe to cache forever.
+    <Directory "${WEB_ROOT}/assets">
+        Header set Cache-Control "public, max-age=31536000, immutable"
+    </Directory>
+    # Icons under /icons/*: medium cache; replace with hashed names later if you want.
+    <Directory "${WEB_ROOT}/icons">
+        Header set Cache-Control "public, max-age=604800"
+    </Directory>
 
     <Directory ${WEB_ROOT}>
         Options -Indexes +FollowSymLinks
         AllowOverride All
         Require all granted
 
-        # React SPA — send all routes to index.html
+        # React SPA — send all routes to index.html, except real files.
         RewriteEngine On
         RewriteBase /
-        RewriteRule ^index\.html$ - [L]
+        RewriteRule ^index\\.html$ - [L]
         RewriteCond %{REQUEST_FILENAME} !-f
         RewriteCond %{REQUEST_FILENAME} !-d
         RewriteRule . /index.html [L]
@@ -137,11 +179,32 @@ if [[ "$USE_SSL" == true ]]; then
   info "Requesting Let's Encrypt certificate for ${DOMAIN}…"
   certbot --apache -d "${DOMAIN}" --non-interactive --agree-tos \
     -m "admin@${DOMAIN}" --redirect
+
+  # Inject HSTS into the SSL vhost that certbot just generated.
+  SSL_VHOST="/etc/apache2/sites-available/iteams-front-le-ssl.conf"
+  if [[ -f "$SSL_VHOST" ]] && ! grep -q "Strict-Transport-Security" "$SSL_VHOST"; then
+    sed -i '/<\/VirtualHost>/i \    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"' "$SSL_VHOST"
+  fi
   systemctl reload apache2
   info "SSL certificate installed. Site available at https://${DOMAIN}"
 else
-  warn "SSL skipped. Re-run with --ssl to enable HTTPS (recommended for production)."
+  warn "SSL skipped. Re-run with --ssl to enable HTTPS."
+  warn "⚠ The PWA install prompt + service worker require HTTPS — they will NOT work over plain HTTP."
 fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9b. Smoke test — make sure the site actually returns 200 + manifest + sw
+# ─────────────────────────────────────────────────────────────────────────────
+SCHEME=$([ "$USE_SSL" = true ] && echo "https" || echo "http")
+info "Smoke-testing ${SCHEME}://${DOMAIN}…"
+for path in "/" "/manifest.webmanifest" "/sw.js"; do
+  code=$(curl -k -s -o /dev/null -w "%{http_code}" "${SCHEME}://${DOMAIN}${path}")
+  if [[ "$code" == "200" ]]; then
+    echo "  ✓ ${path} → 200"
+  else
+    warn "  ✗ ${path} → ${code} (check Apache logs)"
+  fi
+done
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 10. Done
