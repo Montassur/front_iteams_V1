@@ -76,7 +76,23 @@ export default function App() {
   const [selectedOrg, setSelectedOrg] = useState<OrganizationSummary | null>(_nav?.selectedOrg ?? null);
   const [activeMeetingId, setActiveMeetingId] = useState<number | null>(_nav?.activeMeetingId ?? null);
   const [activeMeetingOrgId, setActiveMeetingOrgId] = useState<number | null>(_nav?.activeMeetingOrgId ?? null);
-  const [collapsed, setCollapsed] = useState(false);
+  // Default the sidebar to *collapsed* on tablet-range viewports (768–899)
+  // where there's not enough room for the 240px sidebar but it's still inline.
+  // Below 768 the sidebar is a slide-out drawer (rendered full-width when open),
+  // so we leave it un-collapsed there.
+  const [collapsed, setCollapsed] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth >= 768 && window.innerWidth < 900);
+  useEffect(() => {
+    const onResize = () => {
+      const w = window.innerWidth;
+      if (w >= 768 && w < 900) setCollapsed(true);
+      if (w >= 900) setCollapsed(false);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  // Mobile drawer state — slides Sidebar in from the left on <768px screens.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const setPage = (p: PageId) => { setPageRaw(p); };
 
@@ -165,15 +181,23 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <Sidebar
-        page={page} setPage={setPage}
-        user={user} canAccessAdmin={canAccessAdmin} onLogout={handleLogout}
-        collapsed={collapsed} setCollapsed={setCollapsed}
-        onSelectOrg={handleSelectOrg}
-        chatUnreadCount={chatUnread}
-        onChatRead={refreshChatUnread}
-      />
+    <div className="flex h-screen overflow-hidden ms-app-shell">
+      <div className={`ms-sidebar-wrap${mobileNavOpen ? ' ms-sidebar-open' : ''}`}>
+        <Sidebar
+          page={page} setPage={(p) => { setPage(p); setMobileNavOpen(false); }}
+          user={user} canAccessAdmin={canAccessAdmin} onLogout={handleLogout}
+          collapsed={collapsed} setCollapsed={setCollapsed}
+          onSelectOrg={(o) => { handleSelectOrg(o); setMobileNavOpen(false); }}
+          chatUnreadCount={chatUnread}
+          onChatRead={refreshChatUnread}
+        />
+      </div>
+      {mobileNavOpen && (
+        <div className="ms-sidebar-backdrop" onClick={() => setMobileNavOpen(false)} />
+      )}
+      <button className="ms-mobile-nav-btn" onClick={() => setMobileNavOpen((v) => !v)} aria-label="Menu">
+        <SIcon name={mobileNavOpen ? 'X' : 'Menu'} size={20} color="#0f172a" />
+      </button>
       <div key={page} className="page-enter flex flex-1 overflow-hidden min-w-0">
         {renderPage()}
       </div>
