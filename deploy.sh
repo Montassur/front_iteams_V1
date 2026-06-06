@@ -37,10 +37,17 @@ apt-get install -y -qq \
   curl \
   ca-certificates \
   gnupg \
-  apache2 \
+  nginx \
   ufw \
   certbot \
-  python3-certbot-apache
+  python3-certbot-nginx
+
+# Disable Apache if a previous deploy installed it — nginx owns ports 80/443.
+if systemctl is-enabled apache2 &>/dev/null; then
+  info "Disabling legacy Apache install…"
+  systemctl stop apache2 2>/dev/null || true
+  systemctl disable apache2 2>/dev/null || true
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. Node.js (via NodeSource — LTS)
@@ -84,129 +91,153 @@ fi
 rsync -a --delete "$SCRIPT_DIR/dist/" "$WEB_ROOT/"
 chown -R www-data:www-data "$WEB_ROOT"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. Apache2 — enable required modules
-# ─────────────────────────────────────────────────────────────────────────────
-info "Configuring Apache2…"
-# rewrite + headers + ssl: required by the vhost below.
-# deflate + expires + mime: gzip + long-cache hashed assets (PWA & perf).
-# http2: HTTP/2 over TLS for faster bundle delivery.
-a2enmod rewrite headers ssl deflate expires mime http2 2>/dev/null || true
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. Apache2 — virtual host (sites-available)
+# 5. nginx — write the frontend vhost
 # ─────────────────────────────────────────────────────────────────────────────
-VHOST_FILE="/etc/apache2/sites-available/iteams-front.conf"
+info "Configuring nginx…"
 
-cat > "$VHOST_FILE" <<APACHE
-<VirtualHost *:80>
-    ServerName ${DOMAIN}
+# WS upgrade map must live in http{}; drop it once so it's reusable.
+if [[ ! -f /etc/nginx/conf.d/ws-upgrade-map.conf ]]; then
+  cat > /etc/nginx/conf.d/ws-upgrade-map.conf <<'NGINX_MAP'
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+NGINX_MAP
+fi
 
-    DocumentRoot ${WEB_ROOT}
+rm -f /etc/nginx/sites-enabled/default
 
-    ErrorLog  \${APACHE_LOG_DIR}/iteams_front_error.log
-    CustomLog \${APACHE_LOG_DIR}/iteams_front_access.log combined
+FRONT_SITE="/etc/nginx/sites-available/iteams-front"
 
-    # ── Security headers ────────────────────────────────────────────────────
-    Header always set X-Content-Type-Options "nosniff"
-    Header always set X-Frame-Options "SAMEORIGIN"
-    Header always set Referrer-Policy "strict-origin-when-cross-origin"
-    # HSTS is added only when --ssl is used (see post-cert step further down).
+# HTTP-only bootstrap if the cert doesn't exist yet
+if [[ ! -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]]; then
+  info "No cert yet — writing HTTP-only bootstrap vhost."
+  cat > "$FRONT_SITE" <<NGINX
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    root ${WEB_ROOT};
+    index index.html;
+    location / { try_files \$uri \$uri/ /index.html; }
+}
+NGINX
+else
+  cat > "$FRONT_SITE" <<NGINX
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    return 301 https://\$server_name\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name ${DOMAIN};
 
-    # ── PWA MIME types (override defaults to make sure they're correct) ─────
-    AddType application/manifest+json .webmanifest
-    AddType image/svg+xml .svg
-    AddType application/javascript .js
-    AddType application/wasm .wasm
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
 
-    # ── Gzip compression (huge win on the Vite bundle) ──────────────────────
-    <IfModule mod_deflate.c>
-        AddOutputFilterByType DEFLATE \\
-            text/html text/css text/plain text/xml \\
-            application/javascript application/json application/manifest+json \\
-            image/svg+xml application/xml application/x-font-ttf font/opentype
-    </IfModule>
+    root ${WEB_ROOT};
+    index index.html;
 
-    # ── PWA-aware caching policy ────────────────────────────────────────────
-    # Service worker MUST NOT be cached — otherwise updates won't roll out.
-    <Files "sw.js">
-        Header set Cache-Control "no-cache, no-store, must-revalidate"
-        Header set Pragma "no-cache"
-    </Files>
-    # Manifest: refetch frequently so manifest edits take effect.
-    <Files "manifest.webmanifest">
-        Header set Cache-Control "no-cache"
-    </Files>
-    # index.html: never cache — must be fresh so users always get latest asset hashes.
-    <Files "index.html">
-        Header set Cache-Control "no-cache, no-store, must-revalidate"
-    </Files>
-    # Vite emits hashed filenames under /assets/*; safe to cache forever.
-    <Directory "${WEB_ROOT}/assets">
-        Header set Cache-Control "public, max-age=31536000, immutable"
-    </Directory>
-    # Icons under /icons/*: medium cache; replace with hashed names later if you want.
-    <Directory "${WEB_ROOT}/icons">
-        Header set Cache-Control "public, max-age=604800"
-    </Directory>
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-    <Directory ${WEB_ROOT}>
-        Options -Indexes +FollowSymLinks
-        AllowOverride All
-        Require all granted
+    # PWA: service worker + manifest must not be cached
+    location = /sw.js                { add_header Cache-Control "no-cache, no-store, must-revalidate"; }
+    location = /manifest.webmanifest { add_header Cache-Control "no-cache"; }
+    location = /index.html           { add_header Cache-Control "no-cache, no-store, must-revalidate"; }
 
-        # React SPA — send all routes to index.html, except real files.
-        RewriteEngine On
-        RewriteBase /
-        RewriteRule ^index\\.html$ - [L]
-        RewriteCond %{REQUEST_FILENAME} !-f
-        RewriteCond %{REQUEST_FILENAME} !-d
-        RewriteRule . /index.html [L]
-    </Directory>
-</VirtualHost>
-APACHE
+    # Vite hashed assets — long cache
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. Enable site & test config
-# ─────────────────────────────────────────────────────────────────────────────
-a2dissite 000-default.conf 2>/dev/null || true
-a2ensite iteams-front.conf
+    # SPA fallback — only when the requested file does not exist
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
 
-apachectl configtest || error "Apache config test failed — check $VHOST_FILE"
-systemctl enable --now apache2
-systemctl reload apache2
-info "Apache2 configured and reloaded."
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml application/manifest+json;
+}
+NGINX
+fi
+
+ln -sf "$FRONT_SITE" /etc/nginx/sites-enabled/iteams-front
+nginx -t || error "nginx config test failed"
+systemctl enable --now nginx
+systemctl reload nginx
+info "nginx configured and reloaded."
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 8. Firewall
+# 6. Firewall
 # ─────────────────────────────────────────────────────────────────────────────
 info "Configuring UFW firewall…"
-ufw allow OpenSSH      2>/dev/null || true
-ufw allow "Apache Full" 2>/dev/null || true
-ufw --force enable     2>/dev/null || true
+ufw allow OpenSSH     2>/dev/null || true
+ufw allow "Nginx Full" 2>/dev/null || true
+ufw --force enable    2>/dev/null || true
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 9. Optional: Let's Encrypt SSL
+# 7. Let's Encrypt SSL
 # ─────────────────────────────────────────────────────────────────────────────
 if [[ "$USE_SSL" == true ]]; then
-  info "Requesting Let's Encrypt certificate for ${DOMAIN}…"
-  certbot --apache -d "${DOMAIN}" --non-interactive --agree-tos \
-    -m "admin@${DOMAIN}" --redirect
+  info "Requesting / renewing Let's Encrypt certificate for ${DOMAIN}…"
+  certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos \
+    -m "admin@${DOMAIN}" --redirect --keep-until-expiring
 
-  # Inject HSTS into the SSL vhost that certbot just generated.
-  SSL_VHOST="/etc/apache2/sites-available/iteams-front-le-ssl.conf"
-  if [[ -f "$SSL_VHOST" ]] && ! grep -q "Strict-Transport-Security" "$SSL_VHOST"; then
-    sed -i '/<\/VirtualHost>/i \    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"' "$SSL_VHOST"
-  fi
-  systemctl reload apache2
-  info "SSL certificate installed. Site available at https://${DOMAIN}"
+  # Re-write canonical SSL vhost so PWA cache/SPA fallback are correct.
+  cat > "$FRONT_SITE" <<NGINX
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    return 301 https://\$server_name\$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name ${DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+
+    root ${WEB_ROOT};
+    index index.html;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    location = /sw.js                { add_header Cache-Control "no-cache, no-store, must-revalidate"; }
+    location = /manifest.webmanifest { add_header Cache-Control "no-cache"; }
+    location = /index.html           { add_header Cache-Control "no-cache, no-store, must-revalidate"; }
+
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location / {
+        try_files \$uri \$uri/ /index.html;
+    }
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml application/manifest+json;
+}
+NGINX
+
+  nginx -t || error "nginx config test failed after certbot"
+  systemctl reload nginx
+  info "SSL certificate installed."
 else
-  warn "SSL skipped. Re-run with --ssl to enable HTTPS."
-  warn "⚠ The PWA install prompt + service worker require HTTPS — they will NOT work over plain HTTP."
+  warn "SSL skipped. Re-run with --ssl to enable HTTPS (required for the PWA install prompt)."
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 9b. Smoke test — make sure the site actually returns 200 + manifest + sw
+# 9. Smoke tests
 # ─────────────────────────────────────────────────────────────────────────────
 SCHEME=$([ "$USE_SSL" = true ] && echo "https" || echo "http")
 info "Smoke-testing ${SCHEME}://${DOMAIN}…"
@@ -215,7 +246,7 @@ for path in "/" "/manifest.webmanifest" "/sw.js" "/icons/icon-192.svg" "/icons/i
   if [[ "$code" == "200" ]]; then
     echo "  ✓ ${path} → 200"
   else
-    warn "  ✗ ${path} → ${code} (check Apache logs and ${WEB_ROOT}${path})"
+    warn "  ✗ ${path} → ${code} (check ${WEB_ROOT}${path} and nginx error log)"
   fi
 done
 
