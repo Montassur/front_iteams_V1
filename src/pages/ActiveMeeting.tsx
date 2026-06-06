@@ -216,11 +216,26 @@ export function ActiveMeeting({ user, meetingId, orgId, setPage }: Props) {
             setFiles((prev) => prev.filter((f) => f.id !== evt.fileId));
           }
         });
-        // Moderator updated a participant's role — sync local state
+        // Moderator updated a participant's role — sync local state.
+        // Also handles ADDED events when a user joins without prior invitation
+        // (backend auto-creates a PARTICIPANT row in that case).
         client.subscribe(`/topic/meeting/${meetingId}/participant-role`, (frame) => {
-          const evt = JSON.parse(frame.body) as { userId: number; role: MeetingRole };
+          const evt = JSON.parse(frame.body) as {
+            userId: number; role: MeetingRole;
+            action?: 'ADDED'; userEmail?: string; userName?: string; participationId?: number;
+          };
           setMeeting((m) => {
             if (!m) return m;
+            const exists = m.participants.some((p) => p.userId === evt.userId);
+            if (!exists && evt.action === 'ADDED' && evt.userEmail && evt.userName && evt.participationId != null) {
+              return {
+                ...m,
+                participants: [
+                  ...m.participants,
+                  { id: evt.participationId, userId: evt.userId, userEmail: evt.userEmail, userName: evt.userName, role: evt.role },
+                ],
+              };
+            }
             return {
               ...m,
               participants: m.participants.map((p) => p.userId === evt.userId ? { ...p, role: evt.role } : p),

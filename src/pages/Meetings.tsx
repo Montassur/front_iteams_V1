@@ -16,6 +16,7 @@ interface MeetingsProps {
 }
 
 type Filter = 'all' | 'upcoming' | 'past';
+type ViewMode = 'list' | 'calendar';
 
 export function Meetings({ user, selectedOrgId, setPage: _setPage, onJoinMeeting }: MeetingsProps) {
   const [orgs, setOrgs] = useState<OrganizationSummary[]>([]);
@@ -24,6 +25,11 @@ export function Meetings({ user, selectedOrgId, setPage: _setPage, onJoinMeeting
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
+  const [view, setView] = useState<ViewMode>('list');
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const d = new Date();
+    return { year: d.getFullYear(), month: d.getMonth() };
+  });
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<MeetingListItem | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -165,6 +171,23 @@ export function Meetings({ user, selectedOrgId, setPage: _setPage, onJoinMeeting
             </button>
           ))}
 
+          {/* List / Calendar view toggle */}
+          <div style={{ display: 'flex', background: '#f1f5f9', borderRadius: 'var(--ms-radius-sm)', padding: 2, gap: 2, marginLeft: 6 }}>
+            {(['list', 'calendar'] as ViewMode[]).map((v) => (
+              <button key={v} onClick={() => setView(v)} title={v === 'list' ? 'Vue liste' : 'Vue calendrier'} style={{
+                display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px',
+                borderRadius: 6, border: 'none', cursor: 'pointer',
+                background: view === v ? '#fff' : 'transparent',
+                color: view === v ? 'var(--ms-accent)' : '#64748b',
+                fontWeight: view === v ? 600 : 500, fontSize: 12, fontFamily: 'inherit',
+                boxShadow: view === v ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
+              }}>
+                <SIcon name={v === 'list' ? 'List' : 'Calendar'} size={12} />
+                {v === 'list' ? 'Liste' : 'Calendrier'}
+              </button>
+            ))}
+          </div>
+
           <div style={{ flex: 1 }} />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#f8fafc', borderRadius: 'var(--ms-radius-sm)', padding: '5px 10px', border: 'var(--ms-border-width) solid #e2e8f0' }}>
@@ -206,6 +229,18 @@ export function Meetings({ user, selectedOrgId, setPage: _setPage, onJoinMeeting
             <EmptyState icon="Loader" message="Chargement…" />
           ) : error ? (
             <EmptyState icon="AlertCircle" message={error} />
+          ) : view === 'calendar' ? (
+            <CalendarView
+              meetings={filtered}
+              year={calendarMonth.year}
+              month={calendarMonth.month}
+              today={today}
+              onPrev={() => setCalendarMonth((c) => c.month === 0 ? { year: c.year - 1, month: 11 } : { ...c, month: c.month - 1 })}
+              onNext={() => setCalendarMonth((c) => c.month === 11 ? { year: c.year + 1, month: 0 } : { ...c, month: c.month + 1 })}
+              onToday={() => { const d = new Date(); setCalendarMonth({ year: d.getFullYear(), month: d.getMonth() }); }}
+              onSelect={(m) => setSelected(m)}
+              onJoin={(m) => onJoinMeeting(m.id, m.organizationId)}
+            />
           ) : sortedDates.length === 0 ? (
             <EmptyState icon="CalendarX" message="Aucune réunion trouvée" />
           ) : sortedDates.map((date) => (
@@ -262,6 +297,129 @@ export function Meetings({ user, selectedOrgId, setPage: _setPage, onJoinMeeting
     </div>
   );
 }
+
+// ── Calendar view ─────────────────────────────────────────────────────────────
+
+function CalendarView({ meetings, year, month, today, onPrev, onNext, onToday, onSelect, onJoin }: {
+  meetings: MeetingListItem[];
+  year: number;
+  month: number; // 0-indexed
+  today: string;
+  onPrev: () => void;
+  onNext: () => void;
+  onToday: () => void;
+  onSelect: (m: MeetingListItem) => void;
+  onJoin: (m: MeetingListItem) => void;
+}) {
+  // Bucket meetings by YYYY-MM-DD (local date)
+  const byDay = meetings.reduce<Record<string, MeetingListItem[]>>((acc, m) => {
+    const day = m.scheduledDateTime.slice(0, 10);
+    (acc[day] ||= []).push(m);
+    return acc;
+  }, {});
+  for (const k of Object.keys(byDay)) {
+    byDay[k].sort((a, b) => a.scheduledDateTime.localeCompare(b.scheduledDateTime));
+  }
+
+  const monthName = new Date(year, month, 1).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+
+  // Build a 6×7 grid starting on Monday
+  const firstOfMonth = new Date(year, month, 1);
+  const jsDow = firstOfMonth.getDay(); // 0 = Sun
+  const mondayOffset = (jsDow + 6) % 7; // 0 = Mon
+  const gridStart = new Date(year, month, 1 - mondayOffset);
+
+  const cells: { date: Date; dayStr: string; inMonth: boolean; isToday: boolean }[] = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
+    const dayStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    cells.push({ date: d, dayStr, inMonth: d.getMonth() === month, isToday: dayStr === today });
+  }
+
+  const weekdays = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+
+  return (
+    <div>
+      {/* Month nav */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+        <button onClick={onPrev} style={navBtn}><SIcon name="ChevronLeft" size={14} /></button>
+        <button onClick={onNext} style={navBtn}><SIcon name="ChevronRight" size={14} /></button>
+        <button onClick={onToday} style={{ ...navBtn, padding: '5px 12px', fontSize: 12, fontWeight: 600 }}>Aujourd'hui</button>
+        <h3 style={{ marginLeft: 6, color: '#0f172a', fontSize: 16, fontWeight: 700, textTransform: 'capitalize' }}>{monthName}</h3>
+      </div>
+
+      {/* Weekday header */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 4 }}>
+        {weekdays.map((d) => (
+          <div key={d} style={{ textAlign: 'center', color: '#64748b', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5, padding: '6px 0' }}>{d}</div>
+        ))}
+      </div>
+
+      {/* Grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4 }}>
+        {cells.map((c) => {
+          const dayMeetings = byDay[c.dayStr] ?? [];
+          return (
+            <div key={c.dayStr} style={{
+              minHeight: 110,
+              background: c.inMonth ? '#fff' : '#f8fafc',
+              border: c.isToday ? '2px solid var(--ms-accent)' : '1px solid #e2e8f0',
+              borderRadius: 8, padding: 6,
+              display: 'flex', flexDirection: 'column', gap: 3,
+              opacity: c.inMonth ? 1 : 0.55,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 }}>
+                <span style={{
+                  fontSize: 11, fontWeight: c.isToday ? 700 : 600,
+                  color: c.isToday ? 'var(--ms-accent)' : c.inMonth ? '#0f172a' : '#94a3b8',
+                  background: c.isToday ? 'var(--ms-accent-pale)' : 'transparent',
+                  borderRadius: 10, padding: c.isToday ? '1px 7px' : '1px 3px',
+                }}>{c.date.getDate()}</span>
+                {dayMeetings.length > 0 && (
+                  <span style={{ fontSize: 9, color: '#94a3b8', fontWeight: 600 }}>{dayMeetings.length}</span>
+                )}
+              </div>
+              {dayMeetings.slice(0, 3).map((m) => {
+                const hh = m.scheduledDateTime.slice(11, 16);
+                const color = statusColor(m.status);
+                return (
+                  <button key={m.id}
+                    onClick={(e) => { e.stopPropagation(); onSelect(m); }}
+                    onDoubleClick={(e) => { e.stopPropagation(); onJoin(m); }}
+                    title={`${hh} — ${m.subject}\n${m.moderatorName ?? ''}${m.participantCount ? ` · ${m.participantCount} participants` : ''}\n(double-clic pour rejoindre)`}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 4,
+                      background: '#fff', border: `1px solid ${color}`,
+                      borderLeft: `3px solid ${color}`,
+                      borderRadius: 4, padding: '2px 5px',
+                      fontSize: 10, fontFamily: 'inherit', cursor: 'pointer',
+                      textAlign: 'left', minWidth: 0,
+                    }}>
+                    <span style={{ color, fontWeight: 700, flexShrink: 0 }}>{hh}</span>
+                    <span style={{ color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{m.subject}</span>
+                  </button>
+                );
+              })}
+              {dayMeetings.length > 3 && (
+                <button onClick={() => onSelect(dayMeetings[3])} style={{
+                  background: 'transparent', border: 'none', cursor: 'pointer',
+                  color: 'var(--ms-accent)', fontSize: 10, fontWeight: 600, textAlign: 'left', padding: '2px 5px', fontFamily: 'inherit',
+                }}>+ {dayMeetings.length - 3} autre{dayMeetings.length - 3 > 1 ? 's' : ''}</button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const navBtn: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  width: 28, height: 28, borderRadius: 6,
+  border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer',
+  color: '#475569', fontFamily: 'inherit',
+};
 
 // ── Row ───────────────────────────────────────────────────────────────────────
 
