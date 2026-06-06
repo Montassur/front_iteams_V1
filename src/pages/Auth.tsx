@@ -99,7 +99,19 @@ export function Auth({ onLogin }: AuthProps) {
   const handleGoogleClick = () => {
     const btn = googleBtnRef.current?.querySelector('div[role="button"]') as HTMLDivElement | null;
     if (btn) { btn.click(); return; }
-    setSubmitError('Google sign-in non disponible.');
+    // Diagnose the real reason so prod misconfigs are visible to the user.
+    if (!GOOGLE_CLIENT_ID) {
+      setSubmitError("Google SSO non configuré (VITE_GOOGLE_CLIENT_ID manquant dans le build).");
+    } else if (!window.google?.accounts?.id) {
+      setSubmitError("Script Google bloqué (accounts.google.com/gsi/client n'a pas chargé — réseau / extension ?).");
+    } else {
+      setSubmitError(
+        "Google a refusé de rendre le bouton. Vérifiez que l'origine "
+        + window.location.origin
+        + " est autorisée dans Google Cloud Console pour le Client ID "
+        + GOOGLE_CLIENT_ID.slice(0, 12) + "…"
+      );
+    }
   };
 
   const handleMicrosoftClick = async () => {
