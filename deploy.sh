@@ -68,6 +68,19 @@ npm run build
 # ─────────────────────────────────────────────────────────────────────────────
 info "Deploying to ${WEB_ROOT}…"
 mkdir -p "$WEB_ROOT"
+
+# PWA sanity check: verify Vite actually copied public/icons into dist/icons.
+# If it didn't, repair it before rsync so the served site has the manifest icons.
+if [[ ! -f "$SCRIPT_DIR/dist/icons/icon-192.svg" ]]; then
+  warn "PWA icons missing in dist/. Re-copying from public/…"
+  mkdir -p "$SCRIPT_DIR/dist/icons"
+  cp -f "$SCRIPT_DIR/public/icons/"*.svg "$SCRIPT_DIR/dist/icons/" 2>/dev/null || true
+fi
+[[ ! -f "$SCRIPT_DIR/dist/manifest.webmanifest" ]] && \
+  cp -f "$SCRIPT_DIR/public/manifest.webmanifest" "$SCRIPT_DIR/dist/manifest.webmanifest" 2>/dev/null || true
+[[ ! -f "$SCRIPT_DIR/dist/sw.js" ]] && \
+  cp -f "$SCRIPT_DIR/public/sw.js" "$SCRIPT_DIR/dist/sw.js" 2>/dev/null || true
+
 rsync -a --delete "$SCRIPT_DIR/dist/" "$WEB_ROOT/"
 chown -R www-data:www-data "$WEB_ROOT"
 
