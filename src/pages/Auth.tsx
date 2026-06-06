@@ -11,17 +11,6 @@ const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undef
 const MICROSOFT_TENANT = (import.meta.env.VITE_MICROSOFT_TENANT as string | undefined) || 'organizations';
 const MICROSOFT_CLIENT_ID = import.meta.env.VITE_MICROSOFT_CLIENT_ID as string | undefined;
 
-function GoogleLogo() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 48 48" aria-hidden>
-      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-    </svg>
-  );
-}
-
 function MicrosoftLogo() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
@@ -96,23 +85,6 @@ export function Auth({ onLogin }: AuthProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, otpMode, pendingSession, remember]);
 
-  const handleGoogleClick = () => {
-    const btn = googleBtnRef.current?.querySelector('div[role="button"]') as HTMLDivElement | null;
-    if (btn) { btn.click(); return; }
-    // Diagnose the real reason so prod misconfigs are visible to the user.
-    if (!GOOGLE_CLIENT_ID) {
-      setSubmitError("Google SSO non configuré (VITE_GOOGLE_CLIENT_ID manquant dans le build).");
-    } else if (!window.google?.accounts?.id) {
-      setSubmitError("Script Google bloqué (accounts.google.com/gsi/client n'a pas chargé — réseau / extension ?).");
-    } else {
-      setSubmitError(
-        "Google a refusé de rendre le bouton. Vérifiez que l'origine "
-        + window.location.origin
-        + " est autorisée dans Google Cloud Console pour le Client ID "
-        + GOOGLE_CLIENT_ID.slice(0, 12) + "…"
-      );
-    }
-  };
 
   const handleMicrosoftClick = async () => {
     if (!MICROSOFT_CLIENT_ID) {
@@ -387,22 +359,12 @@ export function Auth({ onLogin }: AuthProps) {
             {mode === 'login' ? 'Connectez-vous pour accéder à votre espace.' : 'Rejoignez MeetSync et commencez gratuitement.'}
           </p>
 
-          <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-            <button type="button" disabled={!GOOGLE_CLIENT_ID || loading} onClick={handleGoogleClick} style={{
-              flex: 1, padding: '10px 0', border: '1.5px solid #e2e8f0',
-              borderRadius: 'var(--ms-radius-sm)', background: '#fff',
-              cursor: GOOGLE_CLIENT_ID && !loading ? 'pointer' : 'not-allowed',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              fontSize: 13, fontWeight: 500, color: '#334155', transition: 'all 0.15s', fontFamily: 'inherit',
-              opacity: GOOGLE_CLIENT_ID ? 1 : 0.6,
-            }}
-              onMouseEnter={(e) => { if (GOOGLE_CLIENT_ID) e.currentTarget.style.borderColor = '#94a3b8'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#e2e8f0'; }}
-            >
-              <GoogleLogo /> Google
-            </button>
+          {/* SSO buttons — stacked. Google MUST be visible (GIS refuses to render
+              into an off-screen container as an anti-clickjacking measure). */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+            <div ref={googleBtnRef} style={{ display: 'flex', justifyContent: 'center', minHeight: 40 }} />
             <button type="button" disabled={!MICROSOFT_CLIENT_ID || loading} onClick={handleMicrosoftClick} style={{
-              flex: 1, padding: '10px 0', border: '1.5px solid #e2e8f0',
+              width: '100%', padding: '10px 0', border: '1.5px solid #e2e8f0',
               borderRadius: 'var(--ms-radius-sm)', background: '#fff',
               cursor: MICROSOFT_CLIENT_ID && !loading ? 'pointer' : 'not-allowed',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
@@ -412,11 +374,9 @@ export function Auth({ onLogin }: AuthProps) {
               onMouseEnter={(e) => { if (MICROSOFT_CLIENT_ID) e.currentTarget.style.borderColor = '#94a3b8'; }}
               onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#e2e8f0'; }}
             >
-              <MicrosoftLogo /> Microsoft
+              <MicrosoftLogo /> Continuer avec Microsoft
             </button>
           </div>
-          {/* Hidden Google-rendered button (real click target — clicked programmatically) */}
-          <div ref={googleBtnRef} style={{ position: 'absolute', top: -9999, left: -9999, opacity: 0, pointerEvents: 'none' }} />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
             <div style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
@@ -473,7 +433,7 @@ export function Auth({ onLogin }: AuthProps) {
             >
               {loading ? <><Spinner />{mode === 'login' ? 'Connexion…' : 'Création…'}</> : (mode === 'login' ? 'Se connecter' : 'Créer mon compte')}
             </button>
-            {submitError && <p style={{ color: '#dc2626', fontSize: 12, textAlign: 'center', marginTop: 4 }}>{submitError}</p>}
+            {submitError && <p style={{ color: '#dc2626', fontSize: 12, textAlign: 'center', marginTop: 4, whiteSpace: 'pre-line', wordBreak: 'break-all' }}>{submitError}</p>}
             </div>
           </form>
 
