@@ -210,12 +210,12 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 SCHEME=$([ "$USE_SSL" = true ] && echo "https" || echo "http")
 info "Smoke-testing ${SCHEME}://${DOMAIN}…"
-for path in "/" "/manifest.webmanifest" "/sw.js"; do
+for path in "/" "/manifest.webmanifest" "/sw.js" "/icons/icon-192.svg" "/icons/icon-512.svg"; do
   code=$(curl -k -s -o /dev/null -w "%{http_code}" "${SCHEME}://${DOMAIN}${path}")
   if [[ "$code" == "200" ]]; then
     echo "  ✓ ${path} → 200"
   else
-    warn "  ✗ ${path} → ${code} (check Apache logs)"
+    warn "  ✗ ${path} → ${code} (check Apache logs and ${WEB_ROOT}${path})"
   fi
 done
 
