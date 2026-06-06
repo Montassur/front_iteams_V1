@@ -267,6 +267,35 @@ export function useMeetingRoom({ meetingId, userEmail, userName, canShareScreen 
             }
           });
 
+          // Room snapshot — sent only to us right after we publish join.
+          // We use this to initiate offers to everyone already in the room,
+          // so the connection still establishes even if our join broadcast
+          // failed to reach an existing peer (mobile background tab, blip, etc.).
+          client.subscribe(`/user/queue/meeting/${meetingId}/members`, async (frame) => {
+            const msg = JSON.parse(frame.body) as { members: { email: string; name?: string; userId?: number }[] };
+            for (const m of msg.members) {
+              if (m.email === userEmail) continue;
+              if (peerConnsRef.current.has(m.email)) continue;
+              const pc = createPeer(m.email, m.name ?? m.email, m.userId);
+              try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                client.publish({
+                  destination: '/app/meeting.room.signal',
+                  body: JSON.stringify({
+                    type: 'offer',
+                    meetingId,
+                    toEmail: m.email,
+                    fromName: userName,
+                    sdp: offer.sdp,
+                  }),
+                });
+              } catch (e) {
+                console.warn('[WebRTC] failed to offer to existing member', m.email, e);
+              }
+            }
+          });
+
           // Announce presence to other participants
           client.publish({
             destination: '/app/meeting.room.join',
